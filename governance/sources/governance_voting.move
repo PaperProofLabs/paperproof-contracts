@@ -36,6 +36,8 @@ const E_NO_VOTE_TO_CLAIM: u64 = 19;
 const E_VOTING_POWER_BELOW_MINIMUM: u64 = 20;
 const E_PROPOSER_STAKE_BELOW_THRESHOLD: u64 = 21;
 const E_INVALID_PROPOSER_THRESHOLD: u64 = 22;
+const E_UNSUPPORTED_CONFIG_VERSION: u64 = 23;
+const E_UNSUPPORTED_PROPOSAL_VERSION: u64 = 24;
 
 const PROPOSAL_TYPE_EXECUTABLE: u8 = 1;
 const PROPOSAL_TYPE_SIGNAL: u8 = 2;
@@ -66,8 +68,12 @@ const DEFAULT_PROPOSER_THRESHOLD: u64 = 10_000_000_000_000_000; // 10,000,000 PP
 const MIN_PROPOSER_THRESHOLD: u64 = 100_000_000_000_000; // 100,000 PPRF
 const MAX_PROPOSER_THRESHOLD: u64 = 1_000_000_000_000_000_000; // 1,000,000,000 PPRF
 
+const GOVERNANCE_CONFIG_VERSION: u64 = 1;
+const PROPOSAL_VERSION: u64 = 1;
+
 public struct GovernanceConfig has key {
     id: UID,
+    version: u64,
     registry_id: ID,
     pprf_total_supply: u64,
     proposer_threshold: u64,
@@ -84,6 +90,7 @@ public struct VoteRecord has store, drop {
 
 public struct Proposal has key {
     id: UID,
+    version: u64,
     registry_id: ID,
     proposal_id: u64,
     proposer: address,
@@ -153,11 +160,13 @@ public fun new_governance_config(
     vault: &GovernanceVault,
     ctx: &mut TxContext,
 ): GovernanceConfig {
+    governance::assert_current_vault(vault);
     let pprf_total_supply = pprf::total_supply_base_units();
     assert!(pprf_total_supply > 0, E_ZERO_TOTAL_SUPPLY);
 
     let config = GovernanceConfig {
         id: object::new(ctx),
+        version: GOVERNANCE_CONFIG_VERSION,
         registry_id: governance::registry_id(vault),
         pprf_total_supply,
         proposer_threshold: DEFAULT_PROPOSER_THRESHOLD,
@@ -181,6 +190,28 @@ public fun share_governance_config(config: GovernanceConfig) {
     transfer::share_object(config)
 }
 
+public fun migrate_config(
+    config: &mut GovernanceConfig,
+    vault: &GovernanceVault,
+    ctx: &TxContext,
+) {
+    governance::assert_current_vault(vault);
+    assert!(config.registry_id == governance::registry_id(vault), E_INVALID_VAULT_REGISTRY);
+    governance::assert_upgrade_authority(vault, tx_context::sender(ctx));
+    migrate_config_version(config);
+}
+
+public fun migrate_proposal(
+    proposal: &mut Proposal,
+    vault: &GovernanceVault,
+    ctx: &TxContext,
+) {
+    governance::assert_current_vault(vault);
+    assert!(proposal.registry_id == governance::registry_id(vault), E_INVALID_VAULT_REGISTRY);
+    governance::assert_upgrade_authority(vault, tx_context::sender(ctx));
+    migrate_proposal_version(proposal);
+}
+
 public fun create_proposal(
     config: &mut GovernanceConfig,
     proposal_type: u8,
@@ -195,6 +226,7 @@ public fun create_proposal(
     proposer_stake: Coin<PPRF>,
     ctx: &mut TxContext,
 ): u64 {
+    assert_current_config(config);
     assert!(!config.proposal_creation_paused, E_PROPOSAL_CREATION_PAUSED);
     assert!(option::is_none(&config.active_proposal_id), E_ACTIVE_PROPOSAL_EXISTS);
     assert_valid_proposal_action_pair(proposal_type, action_type);
@@ -215,6 +247,7 @@ public fun create_proposal(
 
     let mut proposal = Proposal {
         id: object::new(ctx),
+        version: PROPOSAL_VERSION,
         registry_id: config.registry_id,
         proposal_id,
         proposer,
@@ -276,6 +309,7 @@ public fun vote_yes(
     locked_tokens: Coin<PPRF>,
     ctx: &TxContext,
 ) {
+    assert_current_proposal(proposal);
     cast_vote(proposal, VOTE_SIDE_YES, locked_tokens, ctx)
 }
 
@@ -284,6 +318,7 @@ public fun vote_no(
     locked_tokens: Coin<PPRF>,
     ctx: &TxContext,
 ) {
+    assert_current_proposal(proposal);
     cast_vote(proposal, VOTE_SIDE_NO, locked_tokens, ctx)
 }
 
@@ -292,6 +327,8 @@ public fun finalize_proposal(
     proposal: &mut Proposal,
     ctx: &TxContext,
 ) {
+    assert_current_config(config);
+    assert_current_proposal(proposal);
     assert!(proposal.status == PROPOSAL_STATUS_ACTIVE, E_PROPOSAL_ALREADY_FINALIZED);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(tx_context::epoch(ctx) >= proposal.end_epoch, E_VOTING_NOT_ENDED);
@@ -322,6 +359,9 @@ public fun execute_proposal(
     vault: &mut GovernanceVault,
     ctx: &mut TxContext,
 ) {
+    assert_current_config(config);
+    assert_current_proposal(proposal);
+    governance::assert_current_vault(vault);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(governance::registry_id(vault) == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE, E_PROPOSAL_NOT_EXECUTABLE);
@@ -364,6 +404,7 @@ public fun claim_locked_tokens(
     proposal: &mut Proposal,
     ctx: &mut TxContext,
 ): Coin<PPRF> {
+    assert_current_proposal(proposal);
     assert!(proposal.status != PROPOSAL_STATUS_ACTIVE, E_PROPOSAL_NOT_FINALIZED);
 
     let voter = tx_context::sender(ctx);
@@ -392,6 +433,14 @@ public fun config_registry_id(config: &GovernanceConfig): ID {
     config.registry_id
 }
 
+public fun config_version(config: &GovernanceConfig): u64 {
+    config.version
+}
+
+public fun current_config_version(): u64 {
+    GOVERNANCE_CONFIG_VERSION
+}
+
 public fun total_supply(config: &GovernanceConfig): u64 {
     config.pprf_total_supply
 }
@@ -418,6 +467,14 @@ public fun proposal_object_id(config: &GovernanceConfig, proposal_id: u64): ID {
 
 public fun proposal_id(proposal: &Proposal): u64 {
     proposal.proposal_id
+}
+
+public fun proposal_version(proposal: &Proposal): u64 {
+    proposal.version
+}
+
+public fun current_proposal_version(): u64 {
+    PROPOSAL_VERSION
 }
 
 public fun proposal_type(proposal: &Proposal): u8 {
@@ -602,6 +659,28 @@ fun clear_active_proposal(config: &mut GovernanceConfig, proposal_id: u64) {
         if (active_id == proposal_id) {
             let _ = option::extract(&mut config.active_proposal_id);
         };
+    };
+}
+
+fun assert_current_config(config: &GovernanceConfig) {
+    assert!(config.version == GOVERNANCE_CONFIG_VERSION, E_UNSUPPORTED_CONFIG_VERSION);
+}
+
+fun assert_current_proposal(proposal: &Proposal) {
+    assert!(proposal.version == PROPOSAL_VERSION, E_UNSUPPORTED_PROPOSAL_VERSION);
+}
+
+fun migrate_config_version(config: &mut GovernanceConfig) {
+    assert!(config.version <= GOVERNANCE_CONFIG_VERSION, E_UNSUPPORTED_CONFIG_VERSION);
+    if (config.version < GOVERNANCE_CONFIG_VERSION) {
+        config.version = GOVERNANCE_CONFIG_VERSION;
+    };
+}
+
+fun migrate_proposal_version(proposal: &mut Proposal) {
+    assert!(proposal.version <= PROPOSAL_VERSION, E_UNSUPPORTED_PROPOSAL_VERSION);
+    if (proposal.version < PROPOSAL_VERSION) {
+        proposal.version = PROPOSAL_VERSION;
     };
 }
 

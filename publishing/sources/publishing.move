@@ -73,6 +73,9 @@ const E_EPOCH_REGRESSION: u64 = 21;
 const E_WALRUS_EXTENSION_NOT_IMPLEMENTED: u64 = 22;
 const E_INVALID_GOVERNANCE_VAULT: u64 = 23;
 const E_INVALID_COMMENTS_TREE: u64 = 24;
+const E_UNSUPPORTED_REGISTRY_VERSION: u64 = 25;
+const E_UNSUPPORTED_RECORD_VERSION: u64 = 26;
+const E_RECORD_NOT_IN_REGISTRY: u64 = 27;
 
 const STATUS_RESERVED: u8 = 0;
 const STATUS_PUBLISHED: u8 = 1;
@@ -81,8 +84,12 @@ const UI_NORMAL: u8 = 0;
 const UI_FLAGGED: u8 = 1;
 const UI_HIDDEN_IN_OFFICIAL_UI: u8 = 2;
 
+const PUBLISHING_REGISTRY_VERSION: u64 = 1;
+const PUBLISHING_RECORD_VERSION: u64 = 1;
+
 public struct PaperRegistry has key {
     id: UID,
+    version: u64,
     current_epoch: u64,
     epoch_counter: u64,
     next_record_number: u64,
@@ -98,6 +105,7 @@ public struct PaperRegistry has key {
 
 public struct PaperRecord has key {
     id: UID,
+    version: u64,
     paper_code: String,
     paper_epoch: u64,
     epoch_seq: u64,
@@ -210,6 +218,7 @@ public struct ConfigUpdated has copy, drop {
 fun init(ctx: &mut TxContext) {
     let registry = PaperRegistry {
         id: object::new(ctx),
+        version: PUBLISHING_REGISTRY_VERSION,
         current_epoch: 0,
         epoch_counter: 0,
         next_record_number: 1,
@@ -240,6 +249,7 @@ public fun reserve_code(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_registry(registry);
     assert!(!registry.paused, E_PAUSED);
 
     let sender = tx_context::sender(ctx);
@@ -263,6 +273,7 @@ public fun reserve_code(
 
     let record = PaperRecord {
         id: object::new(ctx),
+        version: PUBLISHING_RECORD_VERSION,
         paper_code,
         paper_epoch: epoch,
         epoch_seq,
@@ -330,8 +341,12 @@ public fun finalize_paper(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_registry(registry);
+    assert_current_record(record);
+    governance::assert_current_vault(governance_vault);
     assert!(!registry.paused, E_PAUSED);
     assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
+    assert_record_in_registry(registry, record);
 
     let sender = tx_context::sender(ctx);
     assert!(sender == record.reserver, E_NOT_RESERVER);
@@ -446,8 +461,12 @@ public fun add_version(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_registry(registry);
+    assert_current_record(record);
+    governance::assert_current_vault(governance_vault);
     assert!(!registry.paused, E_PAUSED);
     assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
+    assert_record_in_registry(registry, record);
 
     let sender = tx_context::sender(ctx);
     assert!(record.status == STATUS_PUBLISHED, E_NOT_PUBLISHED);
@@ -526,6 +545,7 @@ public fun transfer_paper_owner(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_record(record);
     let sender = tx_context::sender(ctx);
     assert!(sender == record.owner, E_NOT_OWNER);
     assert!(new_owner != @0x0, E_INVALID_NEW_OWNER);
@@ -554,6 +574,7 @@ public fun record_storage_extension(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_record(record);
     assert!(record.status == STATUS_PUBLISHED, E_NOT_PUBLISHED);
     assert!(version.paper_record_id == object::id(record), E_INVALID_STATUS);
     assert!(new_storage_end_epoch > version.storage_end_epoch, E_STORAGE_NOT_EXTENDED);
@@ -580,6 +601,8 @@ public fun extend_walrus_storage_and_record(
     _clock_ref: &Clock,
     _ctx: &mut TxContext,
 ) {
+    assert_current_registry(_registry);
+    assert_current_record(_record);
     abort E_WALRUS_EXTENSION_NOT_IMPLEMENTED
 }
 
@@ -591,6 +614,8 @@ public fun set_paused(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_registry(registry);
+    governance::assert_current_vault(governance_vault);
     assert_admin(
         registry,
         governance_vault,
@@ -617,6 +642,8 @@ public fun update_limits(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_registry(registry);
+    governance::assert_current_vault(governance_vault);
     assert_admin(
         registry,
         governance_vault,
@@ -645,6 +672,9 @@ public fun set_ui_status(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_registry(registry);
+    assert_current_record(record);
+    governance::assert_current_vault(governance_vault);
     assert_admin(
         registry,
         governance_vault,
@@ -671,6 +701,22 @@ public fun get_record_id_by_code(
 
 public fun paper_code(record: &PaperRecord): String {
     record.paper_code
+}
+
+public fun registry_version(registry: &PaperRegistry): u64 {
+    registry.version
+}
+
+public fun paper_record_version(record: &PaperRecord): u64 {
+    record.version
+}
+
+public fun current_registry_version(): u64 {
+    PUBLISHING_REGISTRY_VERSION
+}
+
+public fun current_paper_record_version(): u64 {
+    PUBLISHING_RECORD_VERSION
 }
 
 public fun paper_epoch(record: &PaperRecord): u64 {
@@ -709,6 +755,31 @@ public fun comments_tree_id(record: &PaperRecord): &option::Option<ID> {
     &record.comments_tree_id
 }
 
+public fun migrate_registry(
+    registry: &mut PaperRegistry,
+    governance_vault: &GovernanceVault,
+    ctx: &TxContext,
+) {
+    governance::assert_current_vault(governance_vault);
+    assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
+    governance::assert_upgrade_authority(governance_vault, tx_context::sender(ctx));
+    migrate_registry_version(registry);
+}
+
+public fun migrate_record(
+    registry: &PaperRegistry,
+    record: &mut PaperRecord,
+    governance_vault: &GovernanceVault,
+    ctx: &TxContext,
+) {
+    assert_current_registry(registry);
+    governance::assert_current_vault(governance_vault);
+    assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
+    governance::assert_upgrade_authority(governance_vault, tx_context::sender(ctx));
+    assert_record_in_registry(registry, record);
+    migrate_record_version(record);
+}
+
 fun assert_admin(
     registry: &PaperRegistry,
     governance_vault: &GovernanceVault,
@@ -721,6 +792,36 @@ fun assert_admin(
         object::id(registry),
         sender,
     );
+}
+
+fun assert_current_registry(registry: &PaperRegistry) {
+    assert!(registry.version == PUBLISHING_REGISTRY_VERSION, E_UNSUPPORTED_REGISTRY_VERSION);
+}
+
+fun assert_current_record(record: &PaperRecord) {
+    assert!(record.version == PUBLISHING_RECORD_VERSION, E_UNSUPPORTED_RECORD_VERSION);
+}
+
+fun assert_record_in_registry(
+    registry: &PaperRegistry,
+    record: &PaperRecord,
+) {
+    assert!(table::contains(&registry.code_to_record, record.paper_code), E_RECORD_NOT_IN_REGISTRY);
+    assert!(*table::borrow(&registry.code_to_record, record.paper_code) == object::id(record), E_RECORD_NOT_IN_REGISTRY);
+}
+
+fun migrate_registry_version(registry: &mut PaperRegistry) {
+    assert!(registry.version <= PUBLISHING_REGISTRY_VERSION, E_UNSUPPORTED_REGISTRY_VERSION);
+    if (registry.version < PUBLISHING_REGISTRY_VERSION) {
+        registry.version = PUBLISHING_REGISTRY_VERSION;
+    };
+}
+
+fun migrate_record_version(record: &mut PaperRecord) {
+    assert!(record.version <= PUBLISHING_RECORD_VERSION, E_UNSUPPORTED_RECORD_VERSION);
+    if (record.version < PUBLISHING_RECORD_VERSION) {
+        record.version = PUBLISHING_RECORD_VERSION;
+    };
 }
 
 fun validate_metadata(

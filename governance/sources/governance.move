@@ -12,6 +12,7 @@ use openzeppelin_access::two_step_transfer::{
     TwoStepTransferWrapper,
 };
 use sui::coin::{Self as coin, Coin};
+use sui::package::{Self as package, UpgradeCap, UpgradeReceipt, UpgradeTicket};
 use sui::sui::SUI;
 use sui::transfer::Receiving;
 
@@ -26,6 +27,11 @@ const E_STALE_OPERATOR_PERMIT: u64 = 8;
 const E_INVALID_FEE_LEVEL: u64 = 9;
 const E_FEE_PAYMENT_REQUIRED: u64 = 10;
 const E_INSUFFICIENT_FEE_PAYMENT: u64 = 11;
+const E_NOT_UPGRADE_AUTHORITY: u64 = 12;
+const E_UNSUPPORTED_VAULT_VERSION: u64 = 13;
+const E_INVALID_MANAGED_UPGRADE_CAP: u64 = 14;
+
+const GOVERNANCE_VAULT_VERSION: u64 = 1;
 
 const FEE_LEVEL_FREE: u8 = 0;
 const FEE_LEVEL_MICRO: u8 = 1;
@@ -48,6 +54,7 @@ public struct AdminCap has key, store {
 
 public struct GovernanceVault has key {
     id: UID,
+    version: u64,
     registry_id: ID,
     admin_cap: AdminCap,
     governance_authority: address,
@@ -68,6 +75,12 @@ public struct OperatorPermit has key, store {
     operator_epoch: u64,
 }
 
+public struct ManagedUpgradeCap has key {
+    id: UID,
+    registry_id: ID,
+    cap: UpgradeCap,
+}
+
 public fun new_vault(
     registry_id: ID,
     governance_authority: address,
@@ -84,6 +97,7 @@ public fun new_vault(
 
     let vault = GovernanceVault {
         id: object::new(ctx),
+        version: GOVERNANCE_VAULT_VERSION,
         registry_id,
         admin_cap,
         governance_authority,
@@ -109,6 +123,14 @@ public fun new_vault(
 
 public fun registry_id(vault: &GovernanceVault): ID {
     vault.registry_id
+}
+
+public fun governance_vault_version(vault: &GovernanceVault): u64 {
+    vault.version
+}
+
+public fun current_governance_vault_version(): u64 {
+    GOVERNANCE_VAULT_VERSION
 }
 
 public fun governance_authority(vault: &GovernanceVault): address {
@@ -167,8 +189,74 @@ public fun borrow_admin_cap(vault: &GovernanceVault): &AdminCap {
     &vault.admin_cap
 }
 
+public fun assert_current_vault(vault: &GovernanceVault) {
+    assert!(vault.version == GOVERNANCE_VAULT_VERSION, E_UNSUPPORTED_VAULT_VERSION);
+}
+
+public fun assert_upgrade_authority(vault: &GovernanceVault, sender: address) {
+    assert_current_vault(vault);
+    assert!(sender == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
+}
+
 public fun share_vault(vault: GovernanceVault) {
     transfer::share_object(vault)
+}
+
+public fun register_managed_upgrade_cap(
+    vault: &GovernanceVault,
+    cap: UpgradeCap,
+    ctx: &mut TxContext,
+): ManagedUpgradeCap {
+    assert_current_vault(vault);
+    assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
+    assert!(package::upgrade_package(&cap).to_address() != @0x0, E_INVALID_MANAGED_UPGRADE_CAP);
+
+    ManagedUpgradeCap {
+        id: object::new(ctx),
+        registry_id: vault.registry_id,
+        cap,
+    }
+}
+
+public fun share_managed_upgrade_cap(managed_cap: ManagedUpgradeCap) {
+    transfer::share_object(managed_cap)
+}
+
+public fun managed_upgrade_package(managed_cap: &ManagedUpgradeCap): ID {
+    package::upgrade_package(&managed_cap.cap)
+}
+
+public fun authorize_managed_upgrade(
+    vault: &GovernanceVault,
+    managed_cap: &mut ManagedUpgradeCap,
+    policy: u8,
+    digest: vector<u8>,
+    ctx: &TxContext,
+): UpgradeTicket {
+    assert_current_vault(vault);
+    assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
+    assert!(managed_cap.registry_id == vault.registry_id, E_INVALID_REGISTRY);
+    managed_cap.cap.authorize(policy, digest)
+}
+
+public fun commit_managed_upgrade(
+    vault: &GovernanceVault,
+    managed_cap: &mut ManagedUpgradeCap,
+    receipt: UpgradeReceipt,
+    ctx: &TxContext,
+) {
+    assert_current_vault(vault);
+    assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
+    assert!(managed_cap.registry_id == vault.registry_id, E_INVALID_REGISTRY);
+    managed_cap.cap.commit(receipt);
+}
+
+public fun migrate_vault(
+    vault: &mut GovernanceVault,
+    ctx: &TxContext,
+) {
+    assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
+    migrate_vault_version(vault);
 }
 
 public fun set_fee_recipient(
@@ -176,6 +264,7 @@ public fun set_fee_recipient(
     new_fee_recipient: address,
     ctx: &TxContext,
 ) {
+    assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
     apply_fee_recipient(vault, new_fee_recipient);
 }
@@ -185,6 +274,7 @@ public fun set_upgrade_authority(
     new_upgrade_authority: address,
     ctx: &TxContext,
 ) {
+    assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
     apply_upgrade_authority(vault, new_upgrade_authority);
 }
@@ -194,6 +284,7 @@ public fun set_publishing_fee_level(
     new_level: u8,
     ctx: &TxContext,
 ) {
+    assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
     apply_publishing_fee_level(vault, new_level);
 }
@@ -203,6 +294,7 @@ public fun set_comments_fee_level(
     new_level: u8,
     ctx: &TxContext,
 ) {
+    assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
     apply_comments_fee_level(vault, new_level);
 }
@@ -212,6 +304,7 @@ public fun collect_publishing_fee(
     payment: option::Option<Coin<SUI>>,
     ctx: &mut TxContext,
 ) {
+    assert_current_vault(vault);
     collect_fee(vault, publishing_fee_amount(vault), payment, ctx);
 }
 
@@ -220,6 +313,7 @@ public fun collect_comments_fee(
     payment: option::Option<Coin<SUI>>,
     ctx: &mut TxContext,
 ) {
+    assert_current_vault(vault);
     collect_fee(vault, comments_fee_amount(vault), payment, ctx);
 }
 
@@ -229,6 +323,7 @@ public fun assert_active_operator(
     registry_id: ID,
     sender: address,
 ) {
+    assert_current_vault(vault);
     assert!(vault.registry_id == registry_id, E_INVALID_REGISTRY);
     assert!(permit.registry_id == registry_id, E_INVALID_REGISTRY);
     assert!(sender == vault.active_operator, E_NOT_ACTIVE_OPERATOR);
@@ -240,6 +335,7 @@ public fun nominate_operator(
     new_operator: address,
     ctx: &mut TxContext,
 ) {
+    assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
     nominate_operator_internal(vault, new_operator, ctx);
 }
@@ -313,6 +409,7 @@ public fun accept_operator_transfer(
     wrapper_ticket: Receiving<TwoStepTransferWrapper<OperatorPermit>>,
     ctx: &mut TxContext,
 ) {
+    assert_current_vault(vault);
     assert!(vault.has_pending_operator_transfer, E_NO_PENDING_OPERATOR_TRANSFER);
     two_step_transfer::accept_transfer(request, wrapper_ticket, ctx);
 
@@ -329,6 +426,7 @@ public fun cancel_operator_transfer(
     wrapper_ticket: Receiving<TwoStepTransferWrapper<OperatorPermit>>,
     ctx: &mut TxContext,
 ) {
+    assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
     assert!(vault.has_pending_operator_transfer, E_NO_PENDING_OPERATOR_TRANSFER);
     two_step_transfer::cancel_transfer(request, wrapper_ticket, ctx);
@@ -378,6 +476,13 @@ fun collect_fee(
     let fee_coin = coin::split(&mut payment_coin, required_amount, ctx);
     transfer::public_transfer(fee_coin, vault.fee_recipient);
     refund_or_destroy(payment_coin, sender);
+}
+
+fun migrate_vault_version(vault: &mut GovernanceVault) {
+    assert!(vault.version <= GOVERNANCE_VAULT_VERSION, E_UNSUPPORTED_VAULT_VERSION);
+    if (vault.version < GOVERNANCE_VAULT_VERSION) {
+        vault.version = GOVERNANCE_VAULT_VERSION;
+    };
 }
 
 fun refund_or_destroy(coin_to_refund: Coin<SUI>, sender: address) {

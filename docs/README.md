@@ -25,6 +25,9 @@ Current documents include:
   authority as an executable governance item
 - `Treasury-and-Fee-Management.md`: current fee routing model and planned
   treasury evolution path for protocol income and future disbursement
+- `Versioned-Upgrade-Design.md`: current versioned-upgrade preparation,
+  migration hooks, version guards, and the expected future package-upgrade
+  workflow
 
 Unless otherwise expressly stated, all documentation and materials in this
 directory are governed by the repository root `LICENSE`, `NOTICE`, and

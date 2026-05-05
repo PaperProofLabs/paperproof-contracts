@@ -7,6 +7,7 @@ use openzeppelin_access::two_step_transfer::{
     PendingOwnershipTransfer,
     TwoStepTransferWrapper,
 };
+use sui::package;
 use sui::coin;
 use sui::sui::SUI;
 use sui::test_scenario as ts;
@@ -36,10 +37,12 @@ fun test_vault_defaults_and_fee_setters() {
     ts::next_tx(&mut scenario, ADMIN);
     {
         let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        assert!(governance::governance_vault_version(&vault) == governance::current_governance_vault_version(), 0);
         assert!(governance::fee_recipient(&vault) == ADMIN, 0);
         assert!(governance::publishing_fee_level(&vault) == 0, 1);
         assert!(governance::comments_fee_level(&vault) == 0, 2);
         assert!(governance::upgrade_authority(&vault) == ADMIN, 3);
+        governance::migrate_vault(&mut vault, ts::ctx(&mut scenario));
 
         governance::set_fee_recipient(&mut vault, FEE_RECIPIENT, ts::ctx(&mut scenario));
         governance::set_upgrade_authority(&mut vault, UPGRADE_AUTHORITY, ts::ctx(&mut scenario));
@@ -104,6 +107,52 @@ fun test_collect_publishing_fee_transfers_and_refunds() {
         let refund_coin = ts::take_from_sender<coin::Coin<SUI>>(&scenario);
         assert!(coin::value(&refund_coin) == 10_000, 11);
         transfer::public_transfer(refund_coin, PAYER);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_managed_upgrade_cap_custody_and_upgrade_flow() {
+    let mut scenario = ts::begin(ADMIN);
+
+    let managed_cap_id = {
+        let (vault, permit) = governance::new_vault(
+            object::id_from_address(@0x306),
+            ADMIN,
+            OPERATOR,
+            ts::ctx(&mut scenario),
+        );
+        let fake_upgrade_cap = package::test_publish(object::id_from_address(@0x777), ts::ctx(&mut scenario));
+        let managed = governance::register_managed_upgrade_cap(&vault, fake_upgrade_cap, ts::ctx(&mut scenario));
+        let id = object::id(&managed);
+        governance::share_vault(vault);
+        governance::share_managed_upgrade_cap(managed);
+        transfer::public_transfer(permit, OPERATOR);
+        id
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut managed = ts::take_shared_by_id<governance::ManagedUpgradeCap>(&scenario, managed_cap_id);
+        let old_package = governance::managed_upgrade_package(&managed);
+
+        let ticket = governance::authorize_managed_upgrade(
+            &vault,
+            &mut managed,
+            package::compatible_policy(),
+            b"upgrade-digest",
+            ts::ctx(&mut scenario),
+        );
+        let receipt = package::test_upgrade(ticket);
+        governance::commit_managed_upgrade(&vault, &mut managed, receipt, ts::ctx(&mut scenario));
+        let new_package = governance::managed_upgrade_package(&managed);
+
+        assert!(new_package != old_package, 15);
+
+        ts::return_shared(vault);
+        ts::return_shared(managed);
     };
 
     ts::end(scenario);

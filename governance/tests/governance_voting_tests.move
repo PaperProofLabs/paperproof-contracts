@@ -595,6 +595,50 @@ fun test_rejected_proposal_on_low_quorum_and_claim_by_address() {
 }
 
 #[test]
+fun test_migrate_config_and_proposal_hooks() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x40B));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        assert!(voting::config_version(&config) == voting::current_config_version(), 60);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_signal(),
+            voting::action_signal_policy_position(),
+            string::utf8(b"Migration hook"),
+            string::utf8(b"Exercise config and proposal migration hooks"),
+            0,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+
+        voting::migrate_config(&mut config, &vault, ts::ctx(&mut scenario));
+        ts::return_shared(config);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        assert!(voting::proposal_version(&proposal) == voting::current_proposal_version(), 61);
+        voting::migrate_proposal(&mut proposal, &vault, ts::ctx(&mut scenario));
+
+        ts::return_shared(proposal);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 22, location = paperproof_governance::governance_voting)]
 fun test_invalid_proposer_threshold_rejected_at_creation() {
     let mut scenario = ts::begin(ADMIN);

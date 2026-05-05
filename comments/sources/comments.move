@@ -33,11 +33,14 @@ const E_INVALID_NEW_OWNER: u64 = 15;
 const E_INSUFFICIENT_PPRF_LIKE_BALANCE: u64 = 16;
 const E_ALREADY_LIKED: u64 = 17;
 const E_NOT_LIKED: u64 = 18;
+const E_UNSUPPORTED_TREE_VERSION: u64 = 19;
 
 const MIN_PPRF_FOR_LIKE: u64 = 1_000_000_000; // 1 PPRF
+const COMMENTS_TREE_VERSION: u64 = 1;
 
 public struct CommentsTree has key {
     id: UID,
+    version: u64,
     creator: address,
     owner: address,
     registry_id: ID,
@@ -149,6 +152,7 @@ public fun new_tree(
 
     let mut tree = CommentsTree {
         id: object::new(ctx),
+        version: COMMENTS_TREE_VERSION,
         creator: tx_context::sender(ctx),
         owner,
         registry_id,
@@ -208,6 +212,8 @@ public fun add_onchain_comment(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_tree(tree);
+    governance::assert_current_vault(governance_vault);
     assert_tree_open(tree);
     assert!(table::contains(&tree.nodes, parent_comment_id), E_PARENT_NOT_FOUND);
     assert!(!content.is_empty(), E_EMPTY_ONCHAIN_CONTENT);
@@ -273,6 +279,8 @@ public fun add_blob_comment(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
+    assert_current_tree(tree);
+    governance::assert_current_vault(governance_vault);
     assert_tree_open(tree);
     assert!(table::contains(&tree.nodes, parent_comment_id), E_PARENT_NOT_FOUND);
     assert!(!blob_id.is_empty(), E_EMPTY_BLOB_ID);
@@ -331,6 +339,7 @@ public fun like_paper(
     pprf_proof: &Coin<PPRF>,
     ctx: &TxContext,
 ) {
+    assert_current_tree(tree);
     let liker = tx_context::sender(ctx);
     assert!(coin::value(pprf_proof) >= MIN_PPRF_FOR_LIKE, E_INSUFFICIENT_PPRF_LIKE_BALANCE);
     assert!(!table::contains(&tree.likes, liker), E_ALREADY_LIKED);
@@ -350,6 +359,7 @@ public fun unlike_paper(
     pprf_proof: &Coin<PPRF>,
     ctx: &TxContext,
 ) {
+    assert_current_tree(tree);
     let liker = tx_context::sender(ctx);
     assert!(coin::value(pprf_proof) >= MIN_PPRF_FOR_LIKE, E_INSUFFICIENT_PPRF_LIKE_BALANCE);
     assert!(table::contains(&tree.likes, liker), E_NOT_LIKED);
@@ -369,6 +379,7 @@ public fun set_tree_status(
     new_status: u8,
     ctx: &TxContext,
 ) {
+    assert_current_tree(tree);
     assert_tree_owner(tree, ctx);
     assert_valid_tree_status(new_status);
 
@@ -388,6 +399,7 @@ public fun set_comment_status(
     new_status: u8,
     ctx: &TxContext,
 ) {
+    assert_current_tree(tree);
     assert_valid_comment_status(new_status);
     assert!(table::contains(&tree.nodes, comment_id), E_COMMENT_NOT_FOUND);
 
@@ -411,6 +423,7 @@ public fun transfer_tree_owner(
     new_owner: address,
     ctx: &TxContext,
 ) {
+    assert_current_tree(tree);
     assert!(tx_context::sender(ctx) == tree.owner, E_NOT_TREE_OWNER);
     assert!(new_owner != @0x0, E_INVALID_NEW_OWNER);
 
@@ -426,6 +439,14 @@ public fun transfer_tree_owner(
 
 public fun tree_id(tree: &CommentsTree): ID {
     *tree.id.as_inner()
+}
+
+public fun tree_version(tree: &CommentsTree): u64 {
+    tree.version
+}
+
+public fun current_tree_version(): u64 {
+    COMMENTS_TREE_VERSION
 }
 
 public fun creator(tree: &CommentsTree): address {
@@ -582,6 +603,17 @@ public fun minimum_pprf_for_like(): u64 {
     MIN_PPRF_FOR_LIKE
 }
 
+public fun migrate_tree(
+    tree: &mut CommentsTree,
+    governance_vault: &GovernanceVault,
+    ctx: &TxContext,
+) {
+    governance::assert_current_vault(governance_vault);
+    assert!(governance::registry_id(governance_vault) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
+    governance::assert_upgrade_authority(governance_vault, tx_context::sender(ctx));
+    migrate_tree_version(tree);
+}
+
 fun assert_tree_open(tree: &CommentsTree) {
     assert!(tree.status == TREE_STATUS_OPEN, E_TREE_NOT_OPEN);
 }
@@ -606,4 +638,15 @@ fun assert_valid_comment_status(status: u8) {
         status == COMMENT_STATUS_DELETED,
         E_INVALID_COMMENT_STATUS,
     );
+}
+
+fun assert_current_tree(tree: &CommentsTree) {
+    assert!(tree.version == COMMENTS_TREE_VERSION, E_UNSUPPORTED_TREE_VERSION);
+}
+
+fun migrate_tree_version(tree: &mut CommentsTree) {
+    assert!(tree.version <= COMMENTS_TREE_VERSION, E_UNSUPPORTED_TREE_VERSION);
+    if (tree.version < COMMENTS_TREE_VERSION) {
+        tree.version = COMMENTS_TREE_VERSION;
+    };
 }

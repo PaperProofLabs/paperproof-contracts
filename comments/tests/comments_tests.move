@@ -288,6 +288,35 @@ fun test_owner_transfer_updates_tree_governance() {
 }
 
 #[test]
+fun test_tree_migration_hook() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x10A);
+    let paper_object_id = object::id_from_address(@0x20A);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0010",
+        );
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        assert!(comments::tree_version(&tree) == comments::current_tree_version(), 32);
+        comments::migrate_tree(&mut tree, &vault, ts::ctx(&mut scenario));
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 10, location = paperproof_governance::governance)]
 fun test_comments_fee_requires_payment_coin() {
     let mut scenario = ts::begin(ADMIN);

@@ -573,6 +573,48 @@ fun test_operator_nomination_cancel_flow() {
 }
 
 #[test]
+fun test_registry_and_record_migration_hooks() {
+    let mut scenario = ts::begin(ADMIN);
+
+    {
+        publishing::init_for_testing(ts::ctx(&mut scenario));
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut registry = ts::take_shared<PaperRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        assert!(publishing::registry_version(&registry) == publishing::current_registry_version(), 600);
+        publishing::migrate_registry(&mut registry, &vault, ts::ctx(&mut scenario));
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut registry = ts::take_shared<PaperRegistry>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::reserve_code(&mut registry, &clock_ref, ts::ctx(&mut scenario));
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(registry);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let registry = ts::take_shared<PaperRegistry>(&scenario);
+        let mut record = ts::take_shared<PaperRecord>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        assert!(publishing::paper_record_version(&record) == publishing::current_paper_record_version(), 601);
+        publishing::migrate_record(&registry, &mut record, &vault, ts::ctx(&mut scenario));
+        ts::return_shared(registry);
+        ts::return_shared(record);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 15, location = paperproof_publishing::publishing)]
 fun test_non_owner_cannot_add_version() {
     let mut scenario = ts::begin(ADMIN);
