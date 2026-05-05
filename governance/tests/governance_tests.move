@@ -16,6 +16,7 @@ const OPERATOR: address = @0xB;
 const NEW_OPERATOR: address = @0xC;
 const FEE_RECIPIENT: address = @0xD;
 const PAYER: address = @0xE;
+const UPGRADE_AUTHORITY: address = @0xF;
 
 #[test]
 fun test_vault_defaults_and_fee_setters() {
@@ -38,14 +39,17 @@ fun test_vault_defaults_and_fee_setters() {
         assert!(governance::fee_recipient(&vault) == ADMIN, 0);
         assert!(governance::publishing_fee_level(&vault) == 0, 1);
         assert!(governance::comments_fee_level(&vault) == 0, 2);
+        assert!(governance::upgrade_authority(&vault) == ADMIN, 3);
 
         governance::set_fee_recipient(&mut vault, FEE_RECIPIENT, ts::ctx(&mut scenario));
+        governance::set_upgrade_authority(&mut vault, UPGRADE_AUTHORITY, ts::ctx(&mut scenario));
         governance::set_publishing_fee_level(&mut vault, 3, ts::ctx(&mut scenario));
         governance::set_comments_fee_level(&mut vault, 5, ts::ctx(&mut scenario));
 
-        assert!(governance::fee_recipient(&vault) == FEE_RECIPIENT, 3);
-        assert!(governance::publishing_fee_amount(&vault) == 1_000_000, 4);
-        assert!(governance::comments_fee_amount(&vault) == 100_000_000, 5);
+        assert!(governance::fee_recipient(&vault) == FEE_RECIPIENT, 4);
+        assert!(governance::upgrade_authority(&vault) == UPGRADE_AUTHORITY, 5);
+        assert!(governance::publishing_fee_amount(&vault) == 1_000_000, 6);
+        assert!(governance::comments_fee_amount(&vault) == 100_000_000, 7);
 
         ts::return_shared(vault);
     };

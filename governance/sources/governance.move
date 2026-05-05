@@ -51,6 +51,7 @@ public struct GovernanceVault has key {
     registry_id: ID,
     admin_cap: AdminCap,
     governance_authority: address,
+    upgrade_authority: address,
     active_operator: address,
     active_operator_epoch: u64,
     pending_operator: address,
@@ -86,6 +87,7 @@ public fun new_vault(
         registry_id,
         admin_cap,
         governance_authority,
+        upgrade_authority: governance_authority,
         active_operator: initial_operator,
         active_operator_epoch: 1,
         pending_operator: @0x0,
@@ -111,6 +113,10 @@ public fun registry_id(vault: &GovernanceVault): ID {
 
 public fun governance_authority(vault: &GovernanceVault): address {
     vault.governance_authority
+}
+
+public fun upgrade_authority(vault: &GovernanceVault): address {
+    vault.upgrade_authority
 }
 
 public fun active_operator(vault: &GovernanceVault): address {
@@ -174,6 +180,15 @@ public fun set_fee_recipient(
     apply_fee_recipient(vault, new_fee_recipient);
 }
 
+public fun set_upgrade_authority(
+    vault: &mut GovernanceVault,
+    new_upgrade_authority: address,
+    ctx: &TxContext,
+) {
+    assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
+    apply_upgrade_authority(vault, new_upgrade_authority);
+}
+
 public fun set_publishing_fee_level(
     vault: &mut GovernanceVault,
     new_level: u8,
@@ -235,6 +250,14 @@ public(package) fun apply_fee_recipient(
 ) {
     assert!(new_fee_recipient != @0x0, E_INVALID_GOVERNANCE_AUTHORITY);
     vault.fee_recipient = new_fee_recipient;
+}
+
+public(package) fun apply_upgrade_authority(
+    vault: &mut GovernanceVault,
+    new_upgrade_authority: address,
+) {
+    assert!(new_upgrade_authority != @0x0, E_INVALID_GOVERNANCE_AUTHORITY);
+    vault.upgrade_authority = new_upgrade_authority;
 }
 
 public(package) fun apply_publishing_fee_level(

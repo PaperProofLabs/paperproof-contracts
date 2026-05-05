@@ -80,6 +80,7 @@ actions:
 - `NOMINATE_OPERATOR`
 - `SET_PROPOSAL_CREATION_PAUSED`
 - `SET_PROPOSER_THRESHOLD`
+- `SET_UPGRADE_AUTHORITY`
 
 These actions affect one or more of:
 
@@ -154,6 +155,31 @@ The current allowed range is:
 - minimum: `100,000 PPRF`
 - maximum: `1,000,000,000 PPRF`
 
+### 7. Upgrade Authority
+
+Governance can also change the protocol's official `upgrade_authority`
+address.
+
+This address is intended to identify the account or custody path that should
+control future package upgrades for the PaperProof contracts.
+
+This is useful for:
+
+- rotating upgrade control to a new operational address
+- moving upgrade control into multisig or treasury custody later
+- making upgrade-control changes subject to the same public governance process
+  as other protocol authority changes
+
+Important boundary:
+
+- governance can record and update the official `upgrade_authority`
+- actual Sui package upgrades still depend on the real `UpgradeCap` being held
+  by that address or custody path
+
+So this action governs the protocol-recognized upgrader identity, while the
+real package-upgrade path must still be operationally aligned with Sui's
+native upgrade model.
+
 ## Why Executable Governance Requires a Separate Execution Transaction
 
 A passed executable proposal does not mutate state by itself.
@@ -184,6 +210,7 @@ Examples of decisions that fit this mode:
 - raising or lowering publishing fees
 - adjusting comments fees
 - redirecting fee revenue to a treasury
+- rotating the official upgrade authority
 - replacing the active operator
 - changing proposal-spam resistance parameters
 

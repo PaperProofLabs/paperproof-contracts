@@ -11,7 +11,8 @@ provides:
 - `GovernanceVault` as the root protocol authority holder;
 - `OperatorPermit` as the revocable execution role;
 - OpenZeppelin `two_step_transfer` for operator nomination and acceptance; and
-- direct governance control over protocol fee settings and operator selection.
+- direct governance control over protocol fee settings, operator selection, and
+  the official upgrade authority address.
 
 The `PPRF` voting layer adds a formal token-governance mechanism for:
 
@@ -54,6 +55,8 @@ Currently implemented executable actions are:
 - `ACTION_SET_FEE_RECIPIENT`
 - `ACTION_NOMINATE_OPERATOR`
 - `ACTION_SET_PROPOSAL_CREATION_PAUSED`
+- `ACTION_SET_PROPOSER_THRESHOLD`
+- `ACTION_SET_UPGRADE_AUTHORITY`
 
 These proposals are intended to produce enforceable protocol changes.
 
@@ -118,7 +121,8 @@ The contract:
 
 - consumes that `Coin<PPRF>`;
 - converts it into an internal locked balance stored inside the proposal; and
-- returns a `VoteReceipt` that proves the locked vote position.
+- records the locked voting position under the voter address inside the
+  proposal state.
 
 The locked `PPRF` remains inside the proposal until the proposal is finalized.
 
@@ -129,16 +133,10 @@ calling:
 
 - `claim_locked_tokens`
 
-and presenting the corresponding `VoteReceipt`.
+from the same address that originally cast the vote.
 
-The receipt must match:
-
-- the proposal;
-- the original voter address; and
-- the recorded vote side and voting power.
-
-If these checks pass, the contract releases the locked `PPRF` back to the
-caller as a `Coin<PPRF>`.
+The contract looks up the stored vote record for that address and releases the
+corresponding locked `PPRF` back to the caller as a `Coin<PPRF>`.
 
 ### Why This Model Is Used
 
@@ -208,8 +206,7 @@ public struct GovernanceConfig has key {
     id: UID,
     registry_id: ID,
     pprf_total_supply: u64,
-    voting_period_ms: u64,
-    execution_delay_ms: u64,
+    proposer_threshold: u64,
     next_proposal_id: u64,
     proposal_creation_paused: bool,
     active_proposal_id: Option<u64>,
@@ -220,8 +217,8 @@ public struct GovernanceConfig has key {
 ### Notes
 
 - `pprf_total_supply` is the governance denominator.
-- `voting_period_ms` defines how long proposals remain open.
-- `execution_delay_ms` may be `0` or positive.
+- `proposer_threshold` is the minimum locked `PPRF` stake required to open a
+  proposal.
 - `proposal_creation_paused` allows governance to halt new proposal creation.
 - `active_proposal_id` enforces the single-active-proposal rule.
 
@@ -248,12 +245,11 @@ public struct Proposal has key {
     no_votes: u64,
     yes_locked_balance: Balance<PPRF>,
     no_locked_balance: Balance<PPRF>,
-    start_time_ms: u64,
-    end_time_ms: u64,
-    execution_earliest_ms: u64,
+    start_epoch: u64,
+    end_epoch: u64,
     status: u8,
     executed: bool,
-    voters: Table<address, bool>,
+    votes: Table<address, VoteRecord>,
 }
 ```
 
@@ -261,29 +257,25 @@ public struct Proposal has key {
 
 - `yes_locked_balance` and `no_locked_balance` are the actual locked `PPRF`
   escrow pools for the proposal.
-- `voters` prevents one-address double voting.
+- `votes` stores exactly one vote record per address.
 - the payload remains generic, but action dispatch is explicit.
+## 3. `VoteRecord`
 
-## 3. `VoteReceipt`
-
-Vote record returned to the voter at voting time.
+Per-address vote record stored inside the proposal.
 
 ```move
-public struct VoteReceipt has key, store {
-    id: UID,
-    proposal_id: u64,
-    voter: address,
+public struct VoteRecord has store, drop {
     side: u8,
     voting_power: u64,
-    voted_at_ms: u64,
 }
 ```
 
 ### Notes
 
-- the receipt is required later to reclaim locked voting tokens;
-- the voter must still be the caller of the claim transaction; and
-- the receipt is consumed during `claim_locked_tokens`.
+- one address can successfully vote only once per proposal;
+- the stored record is later used by `claim_locked_tokens`; and
+- no transferable receipt object is created, which avoids accidental loss or
+  transfer of claim rights.
 
 ## Proposal Types
 
@@ -302,6 +294,8 @@ const ACTION_SET_COMMENTS_FEE_LEVEL: u8 = 2;
 const ACTION_SET_FEE_RECIPIENT: u8 = 3;
 const ACTION_NOMINATE_OPERATOR: u8 = 4;
 const ACTION_SET_PROPOSAL_CREATION_PAUSED: u8 = 5;
+const ACTION_SET_PROPOSER_THRESHOLD: u8 = 6;
+const ACTION_SET_UPGRADE_AUTHORITY: u8 = 7;
 ```
 
 ### Signaling Actions
@@ -328,9 +322,6 @@ const PROPOSAL_STATUS_EXECUTED: u8 = 4;
 ```move
 public fun new_governance_config(
     vault: &GovernanceVault,
-    pprf_total_supply: u64,
-    voting_period_ms: u64,
-    execution_delay_ms: u64,
     ctx: &mut TxContext,
 ): GovernanceConfig
 ```
@@ -355,7 +346,7 @@ public fun create_proposal(
     payload_address: address,
     payload_object_id: Option<ID>,
     payload_bytes: vector<u8>,
-    clock_ref: &Clock,
+    proposer_stake: Coin<PPRF>,
     ctx: &mut TxContext,
 ): u64
 ```
@@ -364,6 +355,7 @@ This function aborts if:
 
 - proposal creation is paused; or
 - another proposal is already active.
+- the proposer stake is below the current proposer threshold.
 
 ### Vote Yes
 
@@ -371,9 +363,8 @@ This function aborts if:
 public fun vote_yes(
     proposal: &mut Proposal,
     locked_tokens: Coin<PPRF>,
-    clock_ref: &Clock,
-    ctx: &mut TxContext,
-): VoteReceipt
+    ctx: &TxContext,
+)
 ```
 
 ### Vote No
@@ -382,17 +373,16 @@ public fun vote_yes(
 public fun vote_no(
     proposal: &mut Proposal,
     locked_tokens: Coin<PPRF>,
-    clock_ref: &Clock,
-    ctx: &mut TxContext,
-): VoteReceipt
+    ctx: &TxContext,
+)
 ```
 
 These functions:
 
 - require the proposal to still be active;
 - reject duplicate votes by the same address;
-- lock the provided `Coin<PPRF>` into the proposal; and
-- return a `VoteReceipt`.
+- require the locked amount to exceed `100 PPRF`; and
+- lock the provided `Coin<PPRF>` into the proposal.
 
 ### Finalize Proposal
 
@@ -400,7 +390,7 @@ These functions:
 public fun finalize_proposal(
     config: &mut GovernanceConfig,
     proposal: &mut Proposal,
-    clock_ref: &Clock,
+    ctx: &TxContext,
 )
 ```
 
@@ -417,7 +407,6 @@ public fun execute_proposal(
     config: &mut GovernanceConfig,
     proposal: &mut Proposal,
     vault: &mut GovernanceVault,
-    clock_ref: &Clock,
     ctx: &mut TxContext,
 )
 ```
@@ -434,7 +423,6 @@ Execution is restricted to:
 ```move
 public fun claim_locked_tokens(
     proposal: &mut Proposal,
-    receipt: VoteReceipt,
     ctx: &mut TxContext,
 ): Coin<PPRF>
 ```
@@ -442,8 +430,8 @@ public fun claim_locked_tokens(
 This function:
 
 - requires the proposal to no longer be active;
-- requires the receipt to match the proposal;
-- requires the caller to be the original voter; and
+- requires the caller address to already have a stored vote record for the
+  proposal; and
 - releases the corresponding locked `PPRF`.
 
 ## Execution Model
@@ -512,6 +500,7 @@ Directly executable proposals are used for:
 
 - fee level changes;
 - fee recipient changes;
+- upgrade authority changes;
 - operator nomination; and
 - clearly bounded protocol configuration changes.
 
@@ -555,13 +544,14 @@ that:
 Current governance voting tests cover:
 
 - creating and executing fee proposals;
+- creating and executing upgrade-authority proposals;
 - signal proposals that pass but are not executable;
 - duplicate vote rejection;
 - low-quorum rejection;
 - single-active-proposal enforcement;
 - operator nomination and handoff execution;
-- signal proposal execution rejection; and
-- `VoteReceipt` ownership checks during token claims.
+- proposer-threshold updates through governance itself; and
+- address-based token claims after proposal finalization.
 
 Related test files:
 
@@ -577,7 +567,8 @@ above the existing PaperProof governance package. It:
 - requires both a relative support threshold and an absolute support threshold;
 - supports both executable and signaling proposals;
 - uses lock-based voting with on-chain `Coin<PPRF>` custody;
-- returns `VoteReceipt` objects for post-finalization claims;
+- uses address-based post-finalization claims instead of transferable vote
+  receipts;
 - enforces that only one proposal may be active at a time; and
 - preserves the separation between governance legitimacy, root authority, and
   operator execution.

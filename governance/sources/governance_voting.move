@@ -46,6 +46,7 @@ const ACTION_SET_FEE_RECIPIENT: u8 = 3;
 const ACTION_NOMINATE_OPERATOR: u8 = 4;
 const ACTION_SET_PROPOSAL_CREATION_PAUSED: u8 = 5;
 const ACTION_SET_PROPOSER_THRESHOLD: u8 = 6;
+const ACTION_SET_UPGRADE_AUTHORITY: u8 = 7;
 
 const ACTION_SIGNAL_REPLACE_OPERATOR: u8 = 101;
 const ACTION_SIGNAL_FEATURE_DIRECTION: u8 = 102;
@@ -344,6 +345,8 @@ public fun execute_proposal(
     } else if (proposal.action_type == ACTION_SET_PROPOSER_THRESHOLD) {
         assert_valid_proposer_threshold(proposal.payload_u64_1);
         config.proposer_threshold = proposal.payload_u64_1;
+    } else if (proposal.action_type == ACTION_SET_UPGRADE_AUTHORITY) {
+        governance::apply_upgrade_authority(vault, proposal.payload_address);
     } else {
         abort E_INVALID_ACTION_TYPE
     };
@@ -518,6 +521,10 @@ public fun action_set_proposer_threshold(): u8 {
     ACTION_SET_PROPOSER_THRESHOLD
 }
 
+public fun action_set_upgrade_authority(): u8 {
+    ACTION_SET_UPGRADE_AUTHORITY
+}
+
 public fun action_signal_replace_operator(): u8 {
     ACTION_SIGNAL_REPLACE_OPERATOR
 }
@@ -617,7 +624,8 @@ fun assert_valid_proposal_action_pair(
             action_type == ACTION_SET_FEE_RECIPIENT ||
             action_type == ACTION_NOMINATE_OPERATOR ||
             action_type == ACTION_SET_PROPOSAL_CREATION_PAUSED ||
-            action_type == ACTION_SET_PROPOSER_THRESHOLD,
+            action_type == ACTION_SET_PROPOSER_THRESHOLD ||
+            action_type == ACTION_SET_UPGRADE_AUTHORITY,
             E_EXECUTABLE_ACTION_NOT_ALLOWED,
         );
     } else if (proposal_type == PROPOSAL_TYPE_SIGNAL) {

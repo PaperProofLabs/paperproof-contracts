@@ -17,10 +17,12 @@ Typical contents of this directory may include:
 
 Current documents include:
 
-- `PPRF-governance-voting.md`: proposed `PPRF` governance voting structure and
-  governance rule draft
+- `PPRF-governance-voting.md`: implemented `PPRF` governance voting structure,
+  lock-based voting rules, and executable governance actions including the
+  official upgrade-authority path
 - `Governance-Modes.md`: detailed explanation of directly executable governance
-  and signal governance in the current `PaperProof` system
+  and signal governance in the current `PaperProof` system, including upgrade
+  authority as an executable governance item
 - `Treasury-and-Fee-Management.md`: current fee routing model and planned
   treasury evolution path for protocol income and future disbursement
 

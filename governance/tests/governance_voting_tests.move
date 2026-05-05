@@ -19,6 +19,7 @@ const OPERATOR: address = @0xB;
 const VOTER1: address = @0xC;
 const NEW_OPERATOR: address = @0xE;
 const FEE_RECIPIENT: address = @0xF;
+const UPGRADE_AUTHORITY: address = @0x11;
 
 const PROPOSER_THRESHOLD: u64 = 10_000_000_000_000_000;
 const QUORUM_PASS_VOTES: u64 = 1_500_000_000_000_000_000;
@@ -338,6 +339,66 @@ fun test_proposer_threshold_update_uses_existing_governance_flow() {
         );
 
         assert!(voting::proposer_threshold(&config) == UPDATED_PROPOSER_THRESHOLD, 40);
+
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_upgrade_authority_update_uses_existing_governance_flow() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x40A));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_upgrade_authority(),
+            string::utf8(b"Set upgrade authority"),
+            string::utf8(b"Move official upgrader control"),
+            0,
+            0,
+            UPGRADE_AUTHORITY,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(QUORUM_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        voting::execute_proposal(
+            &mut config,
+            &mut proposal,
+            &mut vault,
+            ts::ctx(&mut scenario),
+        );
+
+        assert!(governance::upgrade_authority(&vault) == UPGRADE_AUTHORITY, 41);
 
         ts::return_shared(config);
         ts::return_shared(proposal);
