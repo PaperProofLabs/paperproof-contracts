@@ -1,0 +1,10 @@
+[package]
+name = "paperproof_comments"
+edition = "2024"
+version = "0.0.1"
+
+[dependencies]
+paperproof_governance = { local = "../governance" }
+
+[addresses]
+paperproof_comments = "0x0"

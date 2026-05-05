@@ -1,0 +1,11 @@
+[package]
+name = "paperproof_publishing"
+edition = "2024"
+version = "0.0.1"
+
+[dependencies]
+paperproof_comments = { local = "../comments" }
+paperproof_governance = { local = "../governance" }
+
+[addresses]
+paperproof_publishing = "0x0"

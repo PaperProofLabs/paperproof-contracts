@@ -1,0 +1,354 @@
+#[test_only]
+module paperproof_comments::comments_tests;
+
+use std::string;
+
+use paperproof_governance::governance::{Self as governance, GovernanceVault};
+use sui::clock;
+use sui::coin;
+use sui::sui::SUI;
+use sui::test_scenario as ts;
+
+use paperproof_comments::comments::{Self, CommentsTree};
+
+const ADMIN: address = @0xA;
+const USER1: address = @0xB;
+const USER2: address = @0xC;
+
+fun shared_tree(
+    scenario: &mut ts::Scenario,
+    registry_id: ID,
+    paper_object_id: ID,
+    owner: address,
+    paper_key: vector<u8>,
+) {
+    let (vault, permit) = governance::new_vault(
+        registry_id,
+        ADMIN,
+        ADMIN,
+        ts::ctx(scenario),
+    );
+    governance::share_vault(vault);
+    transfer::public_transfer(permit, ADMIN);
+    let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+    let tree = comments::new_tree(
+        registry_id,
+        owner,
+        string::utf8(paper_key),
+        paper_object_id,
+        &clock_ref,
+        ts::ctx(scenario),
+    );
+    comments::share_tree(tree);
+    clock::destroy_for_testing(clock_ref);
+}
+
+#[test]
+fun test_create_tree_and_owner_controls_tree() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x101);
+    let paper_object_id = object::id_from_address(@0x201);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0001",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        assert!(comments::creator(&tree) == ADMIN, 0);
+        assert!(comments::owner(&tree) == USER1, 1);
+        assert!(comments::registry_id(&tree) == registry_id, 2);
+        assert!(comments::root_comment_id(&tree) == 0, 3);
+        assert!(comments::total_comments(&tree) == 0, 4);
+        assert!(comments::has_comment(&tree, 0), 5);
+
+        comments::set_tree_status(
+            &mut tree,
+            comments::tree_status_locked(),
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::tree_status(&tree) == comments::tree_status_locked(), 6);
+
+        let root = comments::borrow_comment(&tree, 0);
+        assert!(comments::comment_depth(root) == 0, 7);
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_add_onchain_and_blob_comments() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x102);
+    let paper_object_id = object::id_from_address(@0x202);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0002",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            0,
+            b"First on-chain comment",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        assert!(comments::total_comments(&tree) == 1, 10);
+        assert!(comments::has_comment(&tree, 1), 11);
+        let c1 = comments::borrow_comment(&tree, 1);
+        assert!(comments::comment_author(c1) == USER1, 12);
+        assert!(comments::content_mode(c1) == comments::comment_mode_onchain(), 13);
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_blob_comment(
+            &mut tree,
+            &vault,
+            1,
+            b"walrus-blob-1",
+            option::none<ID>(),
+            b"sha256:abcd",
+            b"Preview text",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        assert!(comments::total_comments(&tree) == 2, 20);
+        let c2 = comments::borrow_comment(&tree, 2);
+        assert!(comments::comment_author(c2) == USER2, 21);
+        assert!(comments::content_mode(c2) == comments::comment_mode_blob(), 22);
+
+        let parent = comments::borrow_comment(&tree, 1);
+        assert!(comments::children_count(parent) == 1, 23);
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_comments_fee_level_requires_payment() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x103);
+    let paper_object_id = object::id_from_address(@0x203);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0003",
+        );
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        governance::set_comments_fee_level(&mut vault, 2, ts::ctx(&mut scenario));
+        assert!(governance::comments_fee_amount(&vault) == 100_000, 24);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let payment = coin::mint_for_testing<SUI>(100_000, ts::ctx(&mut scenario));
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            0,
+            b"Paid comment",
+            option::some(payment),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_owner_transfer_updates_tree_governance() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x104);
+    let paper_object_id = object::id_from_address(@0x204);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0004",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        comments::transfer_tree_owner(&mut tree, USER2, ts::ctx(&mut scenario));
+        assert!(comments::owner(&tree) == USER2, 30);
+        ts::return_shared(tree);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        comments::set_tree_status(
+            &mut tree,
+            comments::tree_status_locked(),
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::tree_status(&tree) == comments::tree_status_locked(), 31);
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 10, location = paperproof_governance::governance)]
+fun test_comments_fee_requires_payment_coin() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x105);
+    let paper_object_id = object::id_from_address(@0x205);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0005",
+        );
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        governance::set_comments_fee_level(&mut vault, 1, ts::ctx(&mut scenario));
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            0,
+            b"Missing fee coin",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 14, location = paperproof_comments::comments)]
+fun test_foreign_vault_cannot_bypass_comment_fee_binding() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x106);
+    let paper_object_id = object::id_from_address(@0x206);
+    let foreign_registry_id = object::id_from_address(@0x999);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0006",
+        );
+    };
+
+    let foreign_vault_id = {
+        let (foreign_vault, foreign_permit) = governance::new_vault(
+            foreign_registry_id,
+            ADMIN,
+            ADMIN,
+            ts::ctx(&mut scenario),
+        );
+        let id = object::id(&foreign_vault);
+        governance::share_vault(foreign_vault);
+        transfer::public_transfer(foreign_permit, ADMIN);
+        id
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let foreign_vault = ts::take_shared_by_id<GovernanceVault>(&scenario, foreign_vault_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &foreign_vault,
+            0,
+            b"Should fail",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(foreign_vault);
+    };
+
+    ts::end(scenario);
+}
