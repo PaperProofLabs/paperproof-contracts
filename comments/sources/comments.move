@@ -7,9 +7,10 @@
 module paperproof_comments::comments;
 
 use paperproof_governance::governance::{Self as governance, GovernanceVault};
+use pprf::pprf::PPRF;
 use std::string::{Self as string, String};
 use sui::clock::{Self as clock, Clock};
-use sui::coin::Coin;
+use sui::coin::{Self as coin, Coin};
 use sui::event;
 use sui::sui::SUI;
 use sui::table::{Self as table, Table};
@@ -29,6 +30,11 @@ const E_NOT_COMMENT_OWNER_OR_TREE_OWNER: u64 = 12;
 const E_COMMENT_DEPTH_LIMIT: u64 = 13;
 const E_INVALID_GOVERNANCE_VAULT: u64 = 14;
 const E_INVALID_NEW_OWNER: u64 = 15;
+const E_INSUFFICIENT_PPRF_LIKE_BALANCE: u64 = 16;
+const E_ALREADY_LIKED: u64 = 17;
+const E_NOT_LIKED: u64 = 18;
+
+const MIN_PPRF_FOR_LIKE: u64 = 1_000_000_000; // 1 PPRF
 
 public struct CommentsTree has key {
     id: UID,
@@ -44,6 +50,8 @@ public struct CommentsTree has key {
     max_onchain_comment_bytes: u64,
     max_comment_depth: u16,
     created_at_ms: u64,
+    like_count: u64,
+    likes: Table<address, bool>,
     nodes: Table<u64, CommentNode>,
 }
 
@@ -101,6 +109,18 @@ public struct TreeOwnerTransferredEvent has copy, drop {
     new_owner: address,
 }
 
+public struct PaperLikedEvent has copy, drop {
+    tree_id: ID,
+    liker: address,
+    like_count: u64,
+}
+
+public struct PaperUnlikedEvent has copy, drop {
+    tree_id: ID,
+    liker: address,
+    like_count: u64,
+}
+
 const ROOT_COMMENT_ID: u64 = 0;
 
 const COMMENT_MODE_ONCHAIN: u8 = 1;
@@ -141,6 +161,8 @@ public fun new_tree(
         max_onchain_comment_bytes: DEFAULT_MAX_ONCHAIN_COMMENT_BYTES,
         max_comment_depth: DEFAULT_MAX_COMMENT_DEPTH,
         created_at_ms: clock::timestamp_ms(clock_ref),
+        like_count: 0,
+        likes: table::new(ctx),
         nodes: table::new(ctx),
     };
 
@@ -304,6 +326,44 @@ public fun add_blob_comment(
     });
 }
 
+public fun like_paper(
+    tree: &mut CommentsTree,
+    pprf_proof: &Coin<PPRF>,
+    ctx: &TxContext,
+) {
+    let liker = tx_context::sender(ctx);
+    assert!(coin::value(pprf_proof) >= MIN_PPRF_FOR_LIKE, E_INSUFFICIENT_PPRF_LIKE_BALANCE);
+    assert!(!table::contains(&tree.likes, liker), E_ALREADY_LIKED);
+
+    table::add(&mut tree.likes, liker, true);
+    tree.like_count = tree.like_count + 1;
+
+    event::emit(PaperLikedEvent {
+        tree_id: *tree.id.as_inner(),
+        liker,
+        like_count: tree.like_count,
+    });
+}
+
+public fun unlike_paper(
+    tree: &mut CommentsTree,
+    pprf_proof: &Coin<PPRF>,
+    ctx: &TxContext,
+) {
+    let liker = tx_context::sender(ctx);
+    assert!(coin::value(pprf_proof) >= MIN_PPRF_FOR_LIKE, E_INSUFFICIENT_PPRF_LIKE_BALANCE);
+    assert!(table::contains(&tree.likes, liker), E_NOT_LIKED);
+
+    let _ = table::remove(&mut tree.likes, liker);
+    tree.like_count = tree.like_count - 1;
+
+    event::emit(PaperUnlikedEvent {
+        tree_id: *tree.id.as_inner(),
+        liker,
+        like_count: tree.like_count,
+    });
+}
+
 public fun set_tree_status(
     tree: &mut CommentsTree,
     new_status: u8,
@@ -412,6 +472,14 @@ public fun max_comment_depth(tree: &CommentsTree): u16 {
     tree.max_comment_depth
 }
 
+public fun like_count(tree: &CommentsTree): u64 {
+    tree.like_count
+}
+
+public fun has_liked(tree: &CommentsTree, liker: address): bool {
+    table::contains(&tree.likes, liker)
+}
+
 public fun has_comment(tree: &CommentsTree, comment_id: u64): bool {
     table::contains(&tree.nodes, comment_id)
 }
@@ -508,6 +576,10 @@ public fun comment_status_hidden(): u8 {
 
 public fun comment_status_deleted(): u8 {
     COMMENT_STATUS_DELETED
+}
+
+public fun minimum_pprf_for_like(): u64 {
+    MIN_PPRF_FOR_LIKE
 }
 
 fun assert_tree_open(tree: &CommentsTree) {

@@ -4,6 +4,7 @@ module paperproof_comments::comments_tests;
 use std::string;
 
 use paperproof_governance::governance::{Self as governance, GovernanceVault};
+use pprf::pprf::PPRF;
 use sui::clock;
 use sui::coin;
 use sui::sui::SUI;
@@ -212,6 +213,42 @@ fun test_comments_fee_level_requires_payment() {
 }
 
 #[test]
+fun test_like_and_unlike_paper() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x107);
+    let paper_object_id = object::id_from_address(@0x207);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0007",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let proof_coin = coin::mint_for_testing<PPRF>(comments::minimum_pprf_for_like(), ts::ctx(&mut scenario));
+
+        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
+        assert!(comments::like_count(&tree) == 1, 60);
+        assert!(comments::has_liked(&tree, USER1), 61);
+
+        comments::unlike_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
+        assert!(comments::like_count(&tree) == 0, 62);
+        assert!(!comments::has_liked(&tree, USER1), 63);
+
+        transfer::public_transfer(proof_coin, USER1);
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 fun test_owner_transfer_updates_tree_governance() {
     let mut scenario = ts::begin(ADMIN);
     let registry_id = object::id_from_address(@0x104);
@@ -348,6 +385,65 @@ fun test_foreign_vault_cannot_bypass_comment_fee_binding() {
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(tree);
         ts::return_shared(foreign_vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 17, location = paperproof_comments::comments)]
+fun test_double_like_is_rejected() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x108);
+    let paper_object_id = object::id_from_address(@0x208);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0008",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let proof_coin = coin::mint_for_testing<PPRF>(comments::minimum_pprf_for_like(), ts::ctx(&mut scenario));
+        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
+        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
+        transfer::public_transfer(proof_coin, USER1);
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 16, location = paperproof_comments::comments)]
+fun test_like_requires_at_least_one_pprf() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x109);
+    let paper_object_id = object::id_from_address(@0x209);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0009",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let proof_coin = coin::mint_for_testing<PPRF>(comments::minimum_pprf_for_like() - 1, ts::ctx(&mut scenario));
+        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
+        transfer::public_transfer(proof_coin, USER1);
+        ts::return_shared(tree);
     };
 
     ts::end(scenario);
