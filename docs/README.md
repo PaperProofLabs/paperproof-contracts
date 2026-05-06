@@ -35,6 +35,9 @@ Current documents include:
   `publishing`, `comments`, and `governance`, including governance-control,
   upgrade/migration observability, and remaining future additions for off-chain
   monitoring and tooling
+- `PPRF-Utility-Paths.md`: protocol-native and non-protocol utility paths for
+  the `PPRF` token across governance, frontend, community, treasury, and
+  future incentive design
 - `Treasury-and-Fee-Management.md`: current fee routing model and planned
   treasury evolution path for protocol income and future disbursement
 - `Versioned-Upgrade-Design.md`: current versioned-upgrade preparation,
