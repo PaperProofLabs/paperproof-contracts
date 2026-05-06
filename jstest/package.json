@@ -1,0 +1,30 @@
+{
+  "name": "jstest",
+  "version": "1.0.0",
+  "description": "Mainnet functional testing scripts for PaperProof contracts",
+  "main": "mainnet-functional-test.mjs",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "validate": "node ./mainnet-functional-test.mjs --validate",
+    "run": "node ./mainnet-functional-test.mjs --run",
+    "finalize": "node ./mainnet-governance-finalize.mjs"
+  },
+  "keywords": [
+    "sui",
+    "walrus",
+    "paperproof",
+    "mainnet",
+    "testing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@mysten/sui": "2.16.0",
+    "@mysten/walrus": "1.1.2",
+    "dotenv": "^17.2.3",
+    "pdf-lib": "1.17.1"
+  }
+}
