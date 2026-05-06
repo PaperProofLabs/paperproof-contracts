@@ -29,6 +29,10 @@ Current documents include:
 - `Deployment-Manifest-Template.md`: fillable deployment manifest template for
   recording package IDs, root object IDs, governance addresses, upgrade-cap
   custody, smoke tests, and frontend/runtime configuration
+- `Mainnet-Deployment-Record-2026-05-06.md`: actual mainnet deployment record
+  for the v1 contract system, including package IDs, canonical root objects,
+  `GovernanceConfig`, managed `UpgradeCap` custody, transaction digests, and
+  frontend/runtime parameters
 - `Mainnet-GoLive-Checklist.md`: concise launch-readiness checklist for final
   mainnet validation before opening the official frontend to the public
 - `Observability-and-Read-APIs.md`: current events/getters across

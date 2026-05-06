@@ -38,6 +38,7 @@ const E_PROPOSER_STAKE_BELOW_THRESHOLD: u64 = 21;
 const E_INVALID_PROPOSER_THRESHOLD: u64 = 22;
 const E_UNSUPPORTED_CONFIG_VERSION: u64 = 23;
 const E_UNSUPPORTED_PROPOSAL_VERSION: u64 = 24;
+const E_INVALID_PROPOSAL_DURATION_EPOCHS: u64 = 25;
 
 const PROPOSAL_TYPE_EXECUTABLE: u8 = 1;
 const PROPOSAL_TYPE_SIGNAL: u8 = 2;
@@ -49,6 +50,7 @@ const ACTION_NOMINATE_OPERATOR: u8 = 4;
 const ACTION_SET_PROPOSAL_CREATION_PAUSED: u8 = 5;
 const ACTION_SET_PROPOSER_THRESHOLD: u8 = 6;
 const ACTION_SET_UPGRADE_AUTHORITY: u8 = 7;
+const ACTION_SET_PROPOSAL_DURATION_EPOCHS: u8 = 8;
 
 const ACTION_SIGNAL_REPLACE_OPERATOR: u8 = 101;
 const ACTION_SIGNAL_FEATURE_DIRECTION: u8 = 102;
@@ -62,7 +64,9 @@ const PROPOSAL_STATUS_EXECUTED: u8 = 4;
 const VOTE_SIDE_YES: u8 = 1;
 const VOTE_SIDE_NO: u8 = 2;
 
-const PROPOSAL_DURATION_EPOCHS: u64 = 14;
+const DEFAULT_PROPOSAL_DURATION_EPOCHS: u64 = 1;
+const MIN_PROPOSAL_DURATION_EPOCHS: u64 = 7;
+const MAX_PROPOSAL_DURATION_EPOCHS: u64 = 14;
 const MIN_VOTE_STAKE: u64 = 100_000_000_000; // 100 PPRF
 const DEFAULT_PROPOSER_THRESHOLD: u64 = 10_000_000_000_000_000; // 10,000,000 PPRF
 const MIN_PROPOSER_THRESHOLD: u64 = 100_000_000_000_000; // 100,000 PPRF
@@ -77,6 +81,7 @@ public struct GovernanceConfig has key {
     registry_id: ID,
     pprf_total_supply: u64,
     proposer_threshold: u64,
+    proposal_duration_epochs: u64,
     next_proposal_id: u64,
     proposal_creation_paused: bool,
     active_proposal_id: option::Option<u64>,
@@ -181,6 +186,12 @@ public struct ProposerThresholdChangedEvent has copy, drop {
     new_threshold: u64,
 }
 
+public struct ProposalDurationChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    new_duration_epochs: u64,
+}
+
 public fun new_governance_config(
     vault: &GovernanceVault,
     ctx: &mut TxContext,
@@ -195,6 +206,7 @@ public fun new_governance_config(
         registry_id: governance::registry_id(vault),
         pprf_total_supply,
         proposer_threshold: DEFAULT_PROPOSER_THRESHOLD,
+        proposal_duration_epochs: DEFAULT_PROPOSAL_DURATION_EPOCHS,
         next_proposal_id: 1,
         proposal_creation_paused: false,
         active_proposal_id: option::none(),
@@ -205,7 +217,7 @@ public fun new_governance_config(
         registry_id: config.registry_id,
         pprf_total_supply,
         proposer_threshold: DEFAULT_PROPOSER_THRESHOLD,
-        proposal_duration_epochs: PROPOSAL_DURATION_EPOCHS,
+        proposal_duration_epochs: DEFAULT_PROPOSAL_DURATION_EPOCHS,
     });
 
     config
@@ -279,7 +291,7 @@ public fun create_proposal(
     config.next_proposal_id = proposal_id + 1;
 
     let start_epoch = tx_context::epoch(ctx);
-    let end_epoch = start_epoch + PROPOSAL_DURATION_EPOCHS;
+    let end_epoch = start_epoch + config.proposal_duration_epochs;
 
     let mut proposal = Proposal {
         id: object::new(ctx),
@@ -433,6 +445,14 @@ public fun execute_proposal(
         });
     } else if (proposal.action_type == ACTION_SET_UPGRADE_AUTHORITY) {
         governance::apply_upgrade_authority(vault, proposal.payload_address, tx_context::sender(ctx));
+    } else if (proposal.action_type == ACTION_SET_PROPOSAL_DURATION_EPOCHS) {
+        assert_valid_proposal_duration_epochs(proposal.payload_u64_1);
+        config.proposal_duration_epochs = proposal.payload_u64_1;
+        event::emit(ProposalDurationChangedEvent {
+            registry_id: config.registry_id,
+            changed_by: tx_context::sender(ctx),
+            new_duration_epochs: config.proposal_duration_epochs,
+        });
     } else {
         abort E_INVALID_ACTION_TYPE
     };
@@ -493,6 +513,10 @@ public fun total_supply(config: &GovernanceConfig): u64 {
 
 public fun proposer_threshold(config: &GovernanceConfig): u64 {
     config.proposer_threshold
+}
+
+public fun configured_proposal_duration_epochs(config: &GovernanceConfig): u64 {
+    config.proposal_duration_epochs
 }
 
 public fun proposal_creation_paused(config: &GovernanceConfig): bool {
@@ -586,8 +610,16 @@ public fun is_proposal_executable(proposal: &Proposal): bool {
     !proposal.executed
 }
 
-public fun proposal_duration_epochs(): u64 {
-    PROPOSAL_DURATION_EPOCHS
+public fun default_proposal_duration_epochs(): u64 {
+    DEFAULT_PROPOSAL_DURATION_EPOCHS
+}
+
+public fun minimum_proposal_duration_epochs(): u64 {
+    MIN_PROPOSAL_DURATION_EPOCHS
+}
+
+public fun maximum_proposal_duration_epochs(): u64 {
+    MAX_PROPOSAL_DURATION_EPOCHS
 }
 
 public fun minimum_vote_stake(): u64 {
@@ -636,6 +668,10 @@ public fun action_set_proposer_threshold(): u8 {
 
 public fun action_set_upgrade_authority(): u8 {
     ACTION_SET_UPGRADE_AUTHORITY
+}
+
+public fun action_set_proposal_duration_epochs(): u8 {
+    ACTION_SET_PROPOSAL_DURATION_EPOCHS
 }
 
 public fun action_signal_replace_operator(): u8 {
@@ -748,6 +784,14 @@ fun assert_valid_proposer_threshold(new_threshold: u64) {
     );
 }
 
+fun assert_valid_proposal_duration_epochs(new_duration: u64) {
+    assert!(
+        new_duration >= MIN_PROPOSAL_DURATION_EPOCHS &&
+        new_duration <= MAX_PROPOSAL_DURATION_EPOCHS,
+        E_INVALID_PROPOSAL_DURATION_EPOCHS,
+    );
+}
+
 fun assert_valid_proposal_action_pair(
     proposal_type: u8,
     action_type: u8,
@@ -760,7 +804,8 @@ fun assert_valid_proposal_action_pair(
             action_type == ACTION_NOMINATE_OPERATOR ||
             action_type == ACTION_SET_PROPOSAL_CREATION_PAUSED ||
             action_type == ACTION_SET_PROPOSER_THRESHOLD ||
-            action_type == ACTION_SET_UPGRADE_AUTHORITY,
+            action_type == ACTION_SET_UPGRADE_AUTHORITY ||
+            action_type == ACTION_SET_PROPOSAL_DURATION_EPOCHS,
             E_EXECUTABLE_ACTION_NOT_ALLOWED,
         );
     } else if (proposal_type == PROPOSAL_TYPE_SIGNAL) {

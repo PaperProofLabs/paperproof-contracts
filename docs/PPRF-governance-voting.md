@@ -57,6 +57,7 @@ Currently implemented executable actions are:
 - `ACTION_SET_PROPOSAL_CREATION_PAUSED`
 - `ACTION_SET_PROPOSER_THRESHOLD`
 - `ACTION_SET_UPGRADE_AUTHORITY`
+- `ACTION_SET_PROPOSAL_DURATION_EPOCHS`
 
 These proposals are intended to produce enforceable protocol changes.
 
@@ -106,6 +107,37 @@ yes_votes * 10 > total_supply
 ```
 
 These checks are implemented using integer arithmetic only.
+
+## Proposal Duration
+
+The current governance system distinguishes between:
+
+- the initial default proposal duration
+- the governance-configured live proposal duration
+
+### Initial Default
+
+At initialization, governance starts with:
+
+```text
+proposal_duration_epochs = 1
+```
+
+This is intentionally short so the protocol can validate governance mechanics
+and correct parameters during the earliest operating phase.
+
+### Governance-Configurable Range
+
+After initialization, proposal duration can be changed through governance
+itself, but only within the following range:
+
+- minimum governance-set duration: `7` epochs
+- maximum governance-set duration: `14` epochs
+
+So the rule is:
+
+- the bootstrap default may be `1` epoch
+- later governed runtime values must remain between `7` and `14` epochs
 
 ## Lock-Based Voting Model
 
@@ -207,6 +239,7 @@ public struct GovernanceConfig has key {
     registry_id: ID,
     pprf_total_supply: u64,
     proposer_threshold: u64,
+    proposal_duration_epochs: u64,
     next_proposal_id: u64,
     proposal_creation_paused: bool,
     active_proposal_id: Option<u64>,
@@ -219,6 +252,8 @@ public struct GovernanceConfig has key {
 - `pprf_total_supply` is the governance denominator.
 - `proposer_threshold` is the minimum locked `PPRF` stake required to open a
   proposal.
+- `proposal_duration_epochs` is the live governance voting duration used for
+  newly created proposals.
 - `proposal_creation_paused` allows governance to halt new proposal creation.
 - `active_proposal_id` enforces the single-active-proposal rule.
 
@@ -296,6 +331,7 @@ const ACTION_NOMINATE_OPERATOR: u8 = 4;
 const ACTION_SET_PROPOSAL_CREATION_PAUSED: u8 = 5;
 const ACTION_SET_PROPOSER_THRESHOLD: u8 = 6;
 const ACTION_SET_UPGRADE_AUTHORITY: u8 = 7;
+const ACTION_SET_PROPOSAL_DURATION_EPOCHS: u8 = 8;
 ```
 
 ### Signaling Actions
@@ -356,6 +392,9 @@ This function aborts if:
 - proposal creation is paused; or
 - another proposal is already active.
 - the proposer stake is below the current proposer threshold.
+
+The proposal end epoch is computed from the current
+`GovernanceConfig.proposal_duration_epochs` value.
 
 ### Vote Yes
 
@@ -501,6 +540,7 @@ Directly executable proposals are used for:
 - fee level changes;
 - fee recipient changes;
 - upgrade authority changes;
+- proposal duration changes;
 - operator nomination; and
 - clearly bounded protocol configuration changes.
 
@@ -539,6 +579,24 @@ that:
   proposals; and
 - governance attention remains concentrated on one decision at a time.
 
+## 8. Governance-Managed Voting Window
+
+PaperProof governance can now change the live voting window through the same
+governance process, using:
+
+- `ACTION_SET_PROPOSAL_DURATION_EPOCHS`
+
+This means proposal duration is no longer treated as a permanently hardcoded
+runtime value.
+
+However, the live duration remains bounded:
+
+- not below `7`
+- not above `14`
+
+This preserves a flexible production voting policy without allowing arbitrary
+extreme durations through governance.
+
 ## Implemented Test Coverage
 
 Current governance voting tests cover:
@@ -550,7 +608,8 @@ Current governance voting tests cover:
 - low-quorum rejection;
 - single-active-proposal enforcement;
 - operator nomination and handoff execution;
-- proposer-threshold updates through governance itself; and
+- proposer-threshold updates through governance itself;
+- proposal-duration updates through governance itself; and
 - address-based token claims after proposal finalization.
 
 Related test files:
@@ -567,6 +626,8 @@ above the existing PaperProof governance package. It:
 - requires both a relative support threshold and an absolute support threshold;
 - supports both executable and signaling proposals;
 - uses lock-based voting with on-chain `Coin<PPRF>` custody;
+- starts with a `1`-epoch default voting window and allows governance to move
+  the live duration into the `7`-to-`14` epoch runtime range;
 - uses address-based post-finalization claims instead of transferable vote
   receipts;
 - enforces that only one proposal may be active at a time; and

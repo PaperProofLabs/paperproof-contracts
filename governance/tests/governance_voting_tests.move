@@ -26,6 +26,7 @@ const QUORUM_PASS_VOTES: u64 = 1_500_000_000_000_000_000;
 const LOW_QUORUM_VOTES: u64 = 900_000_000_000_000_000;
 const MIN_VOTE_PLUS_ONE: u64 = 100_000_000_001;
 const UPDATED_PROPOSER_THRESHOLD: u64 = 20_000_000_000_000_000;
+const UPDATED_PROPOSAL_DURATION: u64 = 7;
 
 fun mint_votes(amount: u64, scenario: &mut ts::Scenario): Coin<PPRF> {
     coin::mint_for_testing<PPRF>(amount, ts::ctx(scenario))
@@ -51,7 +52,7 @@ fun init_vault_and_config(
 }
 
 fun advance_beyond_voting_period(scenario: &mut ts::Scenario, sender: address) {
-    let duration = voting::proposal_duration_epochs();
+    let duration = voting::default_proposal_duration_epochs();
     let mut i = 0;
     while (i < duration) {
         ts::next_epoch(scenario, sender);
@@ -86,8 +87,11 @@ fun test_create_execute_and_claim_fee_proposal() {
         assert!(proposal_id == 1, 0);
         assert!(voting::total_supply(&config) == pprf::total_supply_base_units(), 1);
         assert!(voting::proposer_threshold(&config) == PROPOSER_THRESHOLD, 2);
+        assert!(voting::configured_proposal_duration_epochs(&config) == 1, 21);
         assert!(option::destroy_some(voting::active_proposal_id(&config)) == 1, 3);
-        assert!(voting::proposal_duration_epochs() == 14, 4);
+        assert!(voting::default_proposal_duration_epochs() == 1, 4);
+        assert!(voting::minimum_proposal_duration_epochs() == 7, 22);
+        assert!(voting::maximum_proposal_duration_epochs() == 14, 23);
         ts::return_shared(config);
     };
 
@@ -343,6 +347,93 @@ fun test_proposer_threshold_update_uses_existing_governance_flow() {
         ts::return_shared(config);
         ts::return_shared(proposal);
         ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_proposal_duration_update_uses_existing_governance_flow() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x40C));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_proposal_duration_epochs(),
+            string::utf8(b"Raise proposal duration"),
+            string::utf8(b"Move voting window to seven epochs"),
+            UPDATED_PROPOSAL_DURATION,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(QUORUM_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        voting::execute_proposal(
+            &mut config,
+            &mut proposal,
+            &mut vault,
+            ts::ctx(&mut scenario),
+        );
+
+        assert!(voting::configured_proposal_duration_epochs(&config) == UPDATED_PROPOSAL_DURATION, 42);
+
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_signal(),
+            voting::action_signal_policy_position(),
+            string::utf8(b"Duration follow-up"),
+            string::utf8(b"Verify new proposal end epoch uses updated duration"),
+            0,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let proposal = ts::take_shared<Proposal>(&scenario);
+        assert!(voting::proposal_end_epoch(&proposal) - voting::proposal_start_epoch(&proposal) == UPDATED_PROPOSAL_DURATION, 43);
+        ts::return_shared(proposal);
     };
 
     ts::end(scenario);

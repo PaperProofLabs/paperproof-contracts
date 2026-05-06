@@ -29,7 +29,9 @@ mechanics:
 - the proposer automatically records a `YES` vote with that locked stake
 - additional voters lock `PPRF` into the proposal to vote
 - each address may successfully vote only once per proposal
-- a proposal remains active for `14` Sui epochs
+- governance starts with a `1`-epoch default proposal duration
+- the live proposal duration may later be changed through governance itself
+  within the `7`-to-`14` epoch range
 - after the voting window ends, the proposal must be finalized on-chain
 - locked voting funds are reclaimed later by the voter address itself
 
@@ -81,6 +83,7 @@ actions:
 - `SET_PROPOSAL_CREATION_PAUSED`
 - `SET_PROPOSER_THRESHOLD`
 - `SET_UPGRADE_AUTHORITY`
+- `SET_PROPOSAL_DURATION_EPOCHS`
 
 These actions affect one or more of:
 
@@ -179,6 +182,28 @@ Important boundary:
 So this action governs the protocol-recognized upgrader identity, while the
 real package-upgrade path must still be operationally aligned with Sui's
 native upgrade model.
+
+### 8. Proposal Duration
+
+Governance can also change the live proposal duration used for newly created
+proposals.
+
+This is useful because:
+
+- the protocol can start with a very short window for early validation;
+- the community can later move into a more production-like voting cadence; and
+- emergency correction of an unsuitable duration does not require immediate
+  package replacement.
+
+The current rule is:
+
+- initial default duration: `1` epoch
+- governance-set runtime duration must stay between `7` and `14` epochs
+
+So the protocol intentionally distinguishes between:
+
+- a short bootstrap/testing default
+- and the later governance-controlled production range
 
 ## Why Executable Governance Requires a Separate Execution Transaction
 
