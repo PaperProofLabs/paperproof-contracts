@@ -156,6 +156,31 @@ public struct VoteClaimedEvent has copy, drop {
     voting_power: u64,
 }
 
+public struct GovernanceConfigMigratedEvent has copy, drop {
+    registry_id: ID,
+    migrated_by: address,
+    new_version: u64,
+}
+
+public struct ProposalMigratedEvent has copy, drop {
+    proposal_id: u64,
+    registry_id: ID,
+    migrated_by: address,
+    new_version: u64,
+}
+
+public struct ProposalCreationPausedChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    paused: bool,
+}
+
+public struct ProposerThresholdChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    new_threshold: u64,
+}
+
 public fun new_governance_config(
     vault: &GovernanceVault,
     ctx: &mut TxContext,
@@ -199,6 +224,11 @@ public fun migrate_config(
     assert!(config.registry_id == governance::registry_id(vault), E_INVALID_VAULT_REGISTRY);
     governance::assert_upgrade_authority(vault, tx_context::sender(ctx));
     migrate_config_version(config);
+    event::emit(GovernanceConfigMigratedEvent {
+        registry_id: config.registry_id,
+        migrated_by: tx_context::sender(ctx),
+        new_version: config.version,
+    });
 }
 
 public fun migrate_proposal(
@@ -210,6 +240,12 @@ public fun migrate_proposal(
     assert!(proposal.registry_id == governance::registry_id(vault), E_INVALID_VAULT_REGISTRY);
     governance::assert_upgrade_authority(vault, tx_context::sender(ctx));
     migrate_proposal_version(proposal);
+    event::emit(ProposalMigratedEvent {
+        proposal_id: proposal.proposal_id,
+        registry_id: proposal.registry_id,
+        migrated_by: tx_context::sender(ctx),
+        new_version: proposal.version,
+    });
 }
 
 public fun create_proposal(
@@ -369,11 +405,11 @@ public fun execute_proposal(
     assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
 
     if (proposal.action_type == ACTION_SET_PUBLISHING_FEE_LEVEL) {
-        governance::apply_publishing_fee_level(vault, proposal.payload_u64_1 as u8);
+        governance::apply_publishing_fee_level(vault, proposal.payload_u64_1 as u8, tx_context::sender(ctx));
     } else if (proposal.action_type == ACTION_SET_COMMENTS_FEE_LEVEL) {
-        governance::apply_comments_fee_level(vault, proposal.payload_u64_1 as u8);
+        governance::apply_comments_fee_level(vault, proposal.payload_u64_1 as u8, tx_context::sender(ctx));
     } else if (proposal.action_type == ACTION_SET_FEE_RECIPIENT) {
-        governance::apply_fee_recipient(vault, proposal.payload_address);
+        governance::apply_fee_recipient(vault, proposal.payload_address, tx_context::sender(ctx));
     } else if (proposal.action_type == ACTION_NOMINATE_OPERATOR) {
         governance::nominate_operator_from_vote(vault, proposal.payload_address, ctx);
     } else if (proposal.action_type == ACTION_SET_PROPOSAL_CREATION_PAUSED) {
@@ -382,11 +418,21 @@ public fun execute_proposal(
             E_INVALID_BOOLEAN_PAYLOAD,
         );
         config.proposal_creation_paused = proposal.payload_u64_1 == 1;
+        event::emit(ProposalCreationPausedChangedEvent {
+            registry_id: config.registry_id,
+            changed_by: tx_context::sender(ctx),
+            paused: config.proposal_creation_paused,
+        });
     } else if (proposal.action_type == ACTION_SET_PROPOSER_THRESHOLD) {
         assert_valid_proposer_threshold(proposal.payload_u64_1);
         config.proposer_threshold = proposal.payload_u64_1;
+        event::emit(ProposerThresholdChangedEvent {
+            registry_id: config.registry_id,
+            changed_by: tx_context::sender(ctx),
+            new_threshold: config.proposer_threshold,
+        });
     } else if (proposal.action_type == ACTION_SET_UPGRADE_AUTHORITY) {
-        governance::apply_upgrade_authority(vault, proposal.payload_address);
+        governance::apply_upgrade_authority(vault, proposal.payload_address, tx_context::sender(ctx));
     } else {
         abort E_INVALID_ACTION_TYPE
     };
@@ -528,6 +574,16 @@ public fun vote_power_of(proposal: &Proposal, voter: address): u64 {
     } else {
         0
     }
+}
+
+public fun can_claim_locked_tokens(proposal: &Proposal, voter: address): bool {
+    proposal.status != PROPOSAL_STATUS_ACTIVE && table::contains(&proposal.votes, voter)
+}
+
+public fun is_proposal_executable(proposal: &Proposal): bool {
+    proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE &&
+    proposal.status == PROPOSAL_STATUS_PASSED &&
+    !proposal.executed
 }
 
 public fun proposal_duration_epochs(): u64 {

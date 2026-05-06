@@ -210,6 +210,21 @@ public struct PaperOwnerTransferred has copy, drop {
     timestamp_ms: u64,
 }
 
+public struct CommentsTreeBound has copy, drop {
+    paper_record_id: ID,
+    paper_code: String,
+    comments_tree_id: ID,
+    bound_at_ms: u64,
+}
+
+public struct PaperUiStatusChanged has copy, drop {
+    paper_record_id: ID,
+    paper_code: String,
+    changed_by: address,
+    ui_status: u8,
+    timestamp_ms: u64,
+}
+
 public struct ConfigUpdated has copy, drop {
     admin: address,
     timestamp_ms: u64,
@@ -431,6 +446,12 @@ public fun finalize_paper(
         file_hash: version.file_hash,
         comments_tree_id,
         published_at_ms: now,
+    });
+    event::emit(CommentsTreeBound {
+        paper_record_id: record_id,
+        paper_code: record.paper_code,
+        comments_tree_id,
+        bound_at_ms: now,
     });
 
     comments::share_tree(comments_tree);
@@ -690,6 +711,13 @@ public fun set_ui_status(
 
     record.ui_status = ui_status;
     record.updated_at_ms = clock::timestamp_ms(clock_ref);
+    event::emit(PaperUiStatusChanged {
+        paper_record_id: object::id(record),
+        paper_code: record.paper_code,
+        changed_by: tx_context::sender(ctx),
+        ui_status,
+        timestamp_ms: record.updated_at_ms,
+    });
 }
 
 public fun get_record_id_by_code(
@@ -701,6 +729,24 @@ public fun get_record_id_by_code(
 
 public fun paper_code(record: &PaperRecord): String {
     record.paper_code
+}
+
+public fun registry_paused(registry: &PaperRegistry): bool {
+    registry.paused
+}
+
+public fun registry_limits(registry: &PaperRegistry): (u64, u64, u64, u64, u64) {
+    (
+        registry.max_file_size,
+        registry.min_page_count,
+        registry.max_page_count,
+        registry.max_keywords,
+        registry.max_authors,
+    )
+}
+
+public fun record_timestamps(record: &PaperRecord): (u64, u64, u64) {
+    (record.reserved_at_ms, record.published_at_ms, record.updated_at_ms)
 }
 
 public fun registry_version(registry: &PaperRegistry): u64 {

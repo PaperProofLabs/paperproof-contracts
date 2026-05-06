@@ -12,6 +12,7 @@ use openzeppelin_access::two_step_transfer::{
     TwoStepTransferWrapper,
 };
 use sui::coin::{Self as coin, Coin};
+use sui::event;
 use sui::package::{Self as package, UpgradeCap, UpgradeReceipt, UpgradeTicket};
 use sui::sui::SUI;
 use sui::transfer::Receiving;
@@ -79,6 +80,77 @@ public struct ManagedUpgradeCap has key {
     id: UID,
     registry_id: ID,
     cap: UpgradeCap,
+}
+
+public struct OperatorNominatedEvent has copy, drop {
+    registry_id: ID,
+    nominated_by: address,
+    new_operator: address,
+    operator_epoch: u64,
+}
+
+public struct OperatorTransferAcceptedEvent has copy, drop {
+    registry_id: ID,
+    accepted_by: address,
+    operator_epoch: u64,
+}
+
+public struct OperatorTransferCancelledEvent has copy, drop {
+    registry_id: ID,
+    cancelled_by: address,
+    pending_operator: address,
+    pending_operator_epoch: u64,
+}
+
+public struct FeeRecipientChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    new_fee_recipient: address,
+}
+
+public struct PublishingFeeLevelChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    new_level: u8,
+    new_amount: u64,
+}
+
+public struct CommentsFeeLevelChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    new_level: u8,
+    new_amount: u64,
+}
+
+public struct UpgradeAuthorityChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    new_upgrade_authority: address,
+}
+
+public struct ManagedUpgradeCapRegisteredEvent has copy, drop {
+    registry_id: ID,
+    registered_by: address,
+    package_id: ID,
+}
+
+public struct ManagedUpgradeAuthorizedEvent has copy, drop {
+    registry_id: ID,
+    authorized_by: address,
+    package_id: ID,
+    policy: u8,
+}
+
+public struct ManagedUpgradeCommittedEvent has copy, drop {
+    registry_id: ID,
+    committed_by: address,
+    package_id: ID,
+}
+
+public struct GovernanceVaultMigratedEvent has copy, drop {
+    registry_id: ID,
+    migrated_by: address,
+    new_version: u64,
 }
 
 public fun new_vault(
@@ -210,12 +282,18 @@ public fun register_managed_upgrade_cap(
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
     assert!(package::upgrade_package(&cap).to_address() != @0x0, E_INVALID_MANAGED_UPGRADE_CAP);
-
-    ManagedUpgradeCap {
+    let package_id = package::upgrade_package(&cap);
+    let managed_cap = ManagedUpgradeCap {
         id: object::new(ctx),
         registry_id: vault.registry_id,
         cap,
-    }
+    };
+    event::emit(ManagedUpgradeCapRegisteredEvent {
+        registry_id: vault.registry_id,
+        registered_by: tx_context::sender(ctx),
+        package_id,
+    });
+    managed_cap
 }
 
 public fun share_managed_upgrade_cap(managed_cap: ManagedUpgradeCap) {
@@ -236,6 +314,12 @@ public fun authorize_managed_upgrade(
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
     assert!(managed_cap.registry_id == vault.registry_id, E_INVALID_REGISTRY);
+    event::emit(ManagedUpgradeAuthorizedEvent {
+        registry_id: vault.registry_id,
+        authorized_by: tx_context::sender(ctx),
+        package_id: package::upgrade_package(&managed_cap.cap),
+        policy,
+    });
     managed_cap.cap.authorize(policy, digest)
 }
 
@@ -249,6 +333,11 @@ public fun commit_managed_upgrade(
     assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
     assert!(managed_cap.registry_id == vault.registry_id, E_INVALID_REGISTRY);
     managed_cap.cap.commit(receipt);
+    event::emit(ManagedUpgradeCommittedEvent {
+        registry_id: vault.registry_id,
+        committed_by: tx_context::sender(ctx),
+        package_id: package::upgrade_package(&managed_cap.cap),
+    });
 }
 
 public fun migrate_vault(
@@ -257,6 +346,11 @@ public fun migrate_vault(
 ) {
     assert!(tx_context::sender(ctx) == vault.upgrade_authority, E_NOT_UPGRADE_AUTHORITY);
     migrate_vault_version(vault);
+    event::emit(GovernanceVaultMigratedEvent {
+        registry_id: vault.registry_id,
+        migrated_by: tx_context::sender(ctx),
+        new_version: vault.version,
+    });
 }
 
 public fun set_fee_recipient(
@@ -266,7 +360,7 @@ public fun set_fee_recipient(
 ) {
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
-    apply_fee_recipient(vault, new_fee_recipient);
+    apply_fee_recipient(vault, new_fee_recipient, tx_context::sender(ctx));
 }
 
 public fun set_upgrade_authority(
@@ -276,7 +370,7 @@ public fun set_upgrade_authority(
 ) {
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
-    apply_upgrade_authority(vault, new_upgrade_authority);
+    apply_upgrade_authority(vault, new_upgrade_authority, tx_context::sender(ctx));
 }
 
 public fun set_publishing_fee_level(
@@ -286,7 +380,7 @@ public fun set_publishing_fee_level(
 ) {
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
-    apply_publishing_fee_level(vault, new_level);
+    apply_publishing_fee_level(vault, new_level, tx_context::sender(ctx));
 }
 
 public fun set_comments_fee_level(
@@ -296,7 +390,7 @@ public fun set_comments_fee_level(
 ) {
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
-    apply_comments_fee_level(vault, new_level);
+    apply_comments_fee_level(vault, new_level, tx_context::sender(ctx));
 }
 
 public fun collect_publishing_fee(
@@ -337,39 +431,65 @@ public fun nominate_operator(
 ) {
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
-    nominate_operator_internal(vault, new_operator, ctx);
+    nominate_operator_internal(vault, new_operator, tx_context::sender(ctx), ctx);
 }
 
 public(package) fun apply_fee_recipient(
     vault: &mut GovernanceVault,
     new_fee_recipient: address,
+    changed_by: address,
 ) {
     assert!(new_fee_recipient != @0x0, E_INVALID_GOVERNANCE_AUTHORITY);
     vault.fee_recipient = new_fee_recipient;
+    event::emit(FeeRecipientChangedEvent {
+        registry_id: vault.registry_id,
+        changed_by,
+        new_fee_recipient,
+    });
 }
 
 public(package) fun apply_upgrade_authority(
     vault: &mut GovernanceVault,
     new_upgrade_authority: address,
+    changed_by: address,
 ) {
     assert!(new_upgrade_authority != @0x0, E_INVALID_GOVERNANCE_AUTHORITY);
     vault.upgrade_authority = new_upgrade_authority;
+    event::emit(UpgradeAuthorityChangedEvent {
+        registry_id: vault.registry_id,
+        changed_by,
+        new_upgrade_authority,
+    });
 }
 
 public(package) fun apply_publishing_fee_level(
     vault: &mut GovernanceVault,
     new_level: u8,
+    changed_by: address,
 ) {
     assert_valid_fee_level(new_level);
     vault.publishing_fee_level = new_level;
+    event::emit(PublishingFeeLevelChangedEvent {
+        registry_id: vault.registry_id,
+        changed_by,
+        new_level,
+        new_amount: fee_amount_for_level(new_level),
+    });
 }
 
 public(package) fun apply_comments_fee_level(
     vault: &mut GovernanceVault,
     new_level: u8,
+    changed_by: address,
 ) {
     assert_valid_fee_level(new_level);
     vault.comments_fee_level = new_level;
+    event::emit(CommentsFeeLevelChangedEvent {
+        registry_id: vault.registry_id,
+        changed_by,
+        new_level,
+        new_amount: fee_amount_for_level(new_level),
+    });
 }
 
 public(package) fun nominate_operator_from_vote(
@@ -377,12 +497,13 @@ public(package) fun nominate_operator_from_vote(
     new_operator: address,
     ctx: &mut TxContext,
 ) {
-    nominate_operator_internal(vault, new_operator, ctx);
+    nominate_operator_internal(vault, new_operator, tx_context::sender(ctx), ctx);
 }
 
 fun nominate_operator_internal(
     vault: &mut GovernanceVault,
     new_operator: address,
+    nominated_by: address,
     ctx: &mut TxContext,
 ) {
     assert!(!vault.has_pending_operator_transfer, E_PENDING_OPERATOR_TRANSFER_EXISTS);
@@ -401,6 +522,12 @@ fun nominate_operator_internal(
 
     let permit_wrapper = two_step_transfer::wrap(permit, ctx);
     two_step_transfer::initiate_transfer(permit_wrapper, new_operator, ctx);
+    event::emit(OperatorNominatedEvent {
+        registry_id: vault.registry_id,
+        nominated_by,
+        new_operator,
+        operator_epoch: new_epoch,
+    });
 }
 
 public fun accept_operator_transfer(
@@ -418,6 +545,11 @@ public fun accept_operator_transfer(
     vault.pending_operator = @0x0;
     vault.pending_operator_epoch = 0;
     vault.has_pending_operator_transfer = false;
+    event::emit(OperatorTransferAcceptedEvent {
+        registry_id: vault.registry_id,
+        accepted_by: tx_context::sender(ctx),
+        operator_epoch: vault.active_operator_epoch,
+    });
 }
 
 public fun cancel_operator_transfer(
@@ -429,11 +561,19 @@ public fun cancel_operator_transfer(
     assert_current_vault(vault);
     assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
     assert!(vault.has_pending_operator_transfer, E_NO_PENDING_OPERATOR_TRANSFER);
+    let pending_operator = vault.pending_operator;
+    let pending_operator_epoch = vault.pending_operator_epoch;
     two_step_transfer::cancel_transfer(request, wrapper_ticket, ctx);
 
     vault.pending_operator = @0x0;
     vault.pending_operator_epoch = 0;
     vault.has_pending_operator_transfer = false;
+    event::emit(OperatorTransferCancelledEvent {
+        registry_id: vault.registry_id,
+        cancelled_by: tx_context::sender(ctx),
+        pending_operator,
+        pending_operator_epoch,
+    });
 }
 
 public fun unwrap_operator_permit(
