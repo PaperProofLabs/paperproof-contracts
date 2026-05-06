@@ -12,8 +12,10 @@ import {
   getGovernanceConfig,
   getGovernanceVault,
   getProposal,
+  governanceOutcomeDeterminable,
   loadAccountsFromEnv,
   parseOptionField,
+  resolveProposalEarly,
   writeJson,
 } from './paperproof-mainnet-common.mjs';
 
@@ -49,21 +51,42 @@ async function main() {
   logger.write(`- createdAtEpoch: ${HARDCODED.createdAtEpoch}`);
 
   const before = await getProposal(rpcClient, HARDCODED.proposalObjectId);
+  const configBefore = await getGovernanceConfig(rpcClient);
   logger.write(`- current status before finalize: ${before.status}`);
   logger.write(`- current epoch window: start=${before.start_epoch}, end=${before.end_epoch}`);
   const systemState = await rpcClient.getLatestSuiSystemState();
   logger.write(`- current chain epoch: ${systemState.epoch}`);
-  if (BigInt(systemState.epoch) <= BigInt(before.end_epoch)) {
-    throw new Error(
-      `Proposal voting is still active. Current epoch is ${systemState.epoch}, but the proposal only becomes finalizable after epoch ${before.end_epoch}.`,
-    );
+  const early = governanceOutcomeDeterminable(
+    configBefore.pprf_total_supply,
+    before.yes_votes,
+    before.no_votes,
+  );
+  logger.write(`- remaining voting supply: ${early.remainingVotingSupply}`);
+  logger.write(`- early determinable: ${early.determinable}`);
+  if (early.determinable) {
+    logger.write(`- early resolution branch: ${early.deterministicPass ? 'PASS' : 'REJECT'}`);
   }
 
-  const finalized = await finalizeProposal(rpcClient, signerEntry.signer, HARDCODED.proposalObjectId);
-  logger.write(`- finalize tx digest: ${finalized.result?.digest ?? finalized.digest}`);
+  let settlement;
+  let settlementMode;
+  if (BigInt(systemState.epoch) <= BigInt(before.end_epoch)) {
+    if (!early.determinable) {
+      throw new Error(
+        `Proposal voting is still active and its outcome is not yet mathematically fixed. Current epoch is ${systemState.epoch}, voting end epoch is ${before.end_epoch}. Wait until voting ends or until the vote becomes determinable.`,
+      );
+    }
+
+    settlement = await resolveProposalEarly(rpcClient, signerEntry.signer, HARDCODED.proposalObjectId);
+    settlementMode = 'early-resolve';
+    logger.write(`- early resolve tx digest: ${settlement.result?.digest ?? settlement.digest}`);
+  } else {
+    settlement = await finalizeProposal(rpcClient, signerEntry.signer, HARDCODED.proposalObjectId);
+    settlementMode = 'finalize';
+    logger.write(`- finalize tx digest: ${settlement.result?.digest ?? settlement.digest}`);
+  }
 
   const after = await getProposal(rpcClient, HARDCODED.proposalObjectId);
-  logger.write(`- status after finalize: ${after.status}`);
+  logger.write(`- status after settlement: ${after.status}`);
   if (Number(after.status) !== 3) {
     throw new Error(`Expected proposal to be REJECTED (3), got ${after.status}.`);
   }
@@ -94,8 +117,9 @@ async function main() {
   const artifact = {
     runId,
     hardcoded: HARDCODED,
+    settlementMode,
     finalizedStatus: Number(after.status),
-    finalizeTxDigest: finalized.result?.digest ?? finalized.digest,
+    settlementTxDigest: settlement.result?.digest ?? settlement.digest,
     claims: [
       {
         account: accounts[0].key,

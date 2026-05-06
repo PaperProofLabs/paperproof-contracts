@@ -39,6 +39,8 @@ const E_INVALID_PROPOSER_THRESHOLD: u64 = 22;
 const E_UNSUPPORTED_CONFIG_VERSION: u64 = 23;
 const E_UNSUPPORTED_PROPOSAL_VERSION: u64 = 24;
 const E_INVALID_PROPOSAL_DURATION_EPOCHS: u64 = 25;
+const E_PROPOSAL_EXECUTION_NOT_EXPIRED: u64 = 26;
+const E_PROPOSAL_OUTCOME_NOT_YET_DETERMINABLE: u64 = 27;
 
 const PROPOSAL_TYPE_EXECUTABLE: u8 = 1;
 const PROPOSAL_TYPE_SIGNAL: u8 = 2;
@@ -60,6 +62,7 @@ const PROPOSAL_STATUS_ACTIVE: u8 = 1;
 const PROPOSAL_STATUS_PASSED: u8 = 2;
 const PROPOSAL_STATUS_REJECTED: u8 = 3;
 const PROPOSAL_STATUS_EXECUTED: u8 = 4;
+const PROPOSAL_STATUS_EXPIRED: u8 = 5;
 
 const VOTE_SIDE_YES: u8 = 1;
 const VOTE_SIDE_NO: u8 = 2;
@@ -67,6 +70,7 @@ const VOTE_SIDE_NO: u8 = 2;
 const DEFAULT_PROPOSAL_DURATION_EPOCHS: u64 = 1;
 const MIN_PROPOSAL_DURATION_EPOCHS: u64 = 7;
 const MAX_PROPOSAL_DURATION_EPOCHS: u64 = 14;
+const EXECUTION_VALIDITY_EPOCHS: u64 = 3;
 const MIN_VOTE_STAKE: u64 = 100_000_000_000; // 100 PPRF
 const DEFAULT_PROPOSER_THRESHOLD: u64 = 10_000_000_000_000_000; // 10,000,000 PPRF
 const MIN_PROPOSER_THRESHOLD: u64 = 100_000_000_000_000; // 100,000 PPRF
@@ -152,6 +156,11 @@ public struct ProposalFinalizedEvent has copy, drop {
 public struct ProposalExecutedEvent has copy, drop {
     proposal_id: u64,
     action_type: u8,
+}
+
+public struct ProposalExpiredEvent has copy, drop {
+    proposal_id: u64,
+    expired_at_epoch: u64,
 }
 
 public struct VoteClaimedEvent has copy, drop {
@@ -381,24 +390,20 @@ public fun finalize_proposal(
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(tx_context::epoch(ctx) >= proposal.end_epoch, E_VOTING_NOT_ENDED);
 
-    let passed =
-        proposal.yes_votes * 3 >= proposal.no_votes * 4 &&
-        proposal.yes_votes * 10 > config.pprf_total_supply;
+    finalize_active_proposal(config, proposal);
+}
 
-    if (passed) {
-        proposal.status = PROPOSAL_STATUS_PASSED;
-    } else {
-        proposal.status = PROPOSAL_STATUS_REJECTED;
-    };
+public fun resolve_proposal_early(
+    config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+) {
+    assert_current_config(config);
+    assert_current_proposal(proposal);
+    assert!(proposal.status == PROPOSAL_STATUS_ACTIVE, E_PROPOSAL_ALREADY_FINALIZED);
+    assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(outcome_determinable(config, proposal), E_PROPOSAL_OUTCOME_NOT_YET_DETERMINABLE);
 
-    clear_active_proposal(config, proposal.proposal_id);
-
-    event::emit(ProposalFinalizedEvent {
-        proposal_id: proposal.proposal_id,
-        yes_votes: proposal.yes_votes,
-        no_votes: proposal.no_votes,
-        status: proposal.status,
-    });
+    finalize_active_proposal(config, proposal);
 }
 
 public fun execute_proposal(
@@ -415,6 +420,12 @@ public fun execute_proposal(
     assert!(proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE, E_PROPOSAL_NOT_EXECUTABLE);
     assert!(proposal.status == PROPOSAL_STATUS_PASSED, E_PROPOSAL_NOT_PASSED);
     assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
+
+    let current_epoch = tx_context::epoch(ctx);
+    if (current_epoch > execution_expiry_epoch(proposal)) {
+        expire_proposal_internal(proposal, current_epoch);
+        return
+    };
 
     if (proposal.action_type == ACTION_SET_PUBLISHING_FEE_LEVEL) {
         governance::apply_publishing_fee_level(vault, proposal.payload_u64_1 as u8, tx_context::sender(ctx));
@@ -464,6 +475,20 @@ public fun execute_proposal(
         proposal_id: proposal.proposal_id,
         action_type: proposal.action_type,
     });
+}
+
+public fun expire_passed_proposal(
+    proposal: &mut Proposal,
+    ctx: &TxContext,
+) {
+    assert_current_proposal(proposal);
+    assert!(proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE, E_PROPOSAL_NOT_EXECUTABLE);
+    assert!(proposal.status == PROPOSAL_STATUS_PASSED, E_PROPOSAL_NOT_PASSED);
+    assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
+
+    let current_epoch = tx_context::epoch(ctx);
+    assert!(current_epoch > execution_expiry_epoch(proposal), E_PROPOSAL_EXECUTION_NOT_EXPIRED);
+    expire_proposal_internal(proposal, current_epoch);
 }
 
 public fun claim_locked_tokens(
@@ -587,6 +612,14 @@ public fun proposal_end_epoch(proposal: &Proposal): u64 {
     proposal.end_epoch
 }
 
+public fun remaining_voting_supply(config: &GovernanceConfig, proposal: &Proposal): u64 {
+    config.pprf_total_supply - proposal.yes_votes - proposal.no_votes
+}
+
+public fun execution_expiry_epoch(proposal: &Proposal): u64 {
+    proposal.end_epoch + EXECUTION_VALIDITY_EPOCHS
+}
+
 public fun has_voted(proposal: &Proposal, voter: address): bool {
     table::contains(&proposal.votes, voter)
 }
@@ -608,6 +641,15 @@ public fun is_proposal_executable(proposal: &Proposal): bool {
     proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE &&
     proposal.status == PROPOSAL_STATUS_PASSED &&
     !proposal.executed
+}
+
+public fun outcome_determinable(config: &GovernanceConfig, proposal: &Proposal): bool {
+    let remaining = remaining_voting_supply(config, proposal);
+    deterministic_pass(config, proposal, remaining) || deterministic_fail(config, proposal, remaining)
+}
+
+public fun execution_validity_epochs(): u64 {
+    EXECUTION_VALIDITY_EPOCHS
 }
 
 public fun default_proposal_duration_epochs(): u64 {
@@ -702,6 +744,10 @@ public fun proposal_status_executed(): u8 {
     PROPOSAL_STATUS_EXECUTED
 }
 
+public fun proposal_status_expired(): u8 {
+    PROPOSAL_STATUS_EXPIRED
+}
+
 fun cast_vote(
     proposal: &mut Proposal,
     side: u8,
@@ -776,6 +822,37 @@ fun migrate_proposal_version(proposal: &mut Proposal) {
     };
 }
 
+fun finalize_active_proposal(
+    config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+) {
+    let passed = passage_rule_satisfied(config, proposal.yes_votes, proposal.no_votes);
+
+    if (passed) {
+        proposal.status = PROPOSAL_STATUS_PASSED;
+    } else {
+        proposal.status = PROPOSAL_STATUS_REJECTED;
+    };
+
+    clear_active_proposal(config, proposal.proposal_id);
+
+    event::emit(ProposalFinalizedEvent {
+        proposal_id: proposal.proposal_id,
+        yes_votes: proposal.yes_votes,
+        no_votes: proposal.no_votes,
+        status: proposal.status,
+    });
+}
+
+fun expire_proposal_internal(proposal: &mut Proposal, current_epoch: u64) {
+    proposal.status = PROPOSAL_STATUS_EXPIRED;
+    proposal.executed = false;
+    event::emit(ProposalExpiredEvent {
+        proposal_id: proposal.proposal_id,
+        expired_at_epoch: current_epoch,
+    });
+}
+
 fun assert_valid_proposer_threshold(new_threshold: u64) {
     assert!(
         new_threshold >= MIN_PROPOSER_THRESHOLD &&
@@ -790,6 +867,36 @@ fun assert_valid_proposal_duration_epochs(new_duration: u64) {
         new_duration <= MAX_PROPOSAL_DURATION_EPOCHS,
         E_INVALID_PROPOSAL_DURATION_EPOCHS,
     );
+}
+
+fun deterministic_pass(
+    config: &GovernanceConfig,
+    proposal: &Proposal,
+    remaining: u64,
+): bool {
+    passage_rule_satisfied(config, proposal.yes_votes, proposal.no_votes + remaining)
+}
+
+fun deterministic_fail(
+    config: &GovernanceConfig,
+    proposal: &Proposal,
+    remaining: u64,
+): bool {
+    let max_possible_yes = proposal.yes_votes + remaining;
+    !passage_rule_satisfied(config, max_possible_yes, proposal.no_votes)
+}
+
+fun passage_rule_satisfied(
+    config: &GovernanceConfig,
+    yes_votes: u64,
+    no_votes: u64,
+): bool {
+    let yes_votes_u128 = yes_votes as u128;
+    let no_votes_u128 = no_votes as u128;
+    let total_supply_u128 = config.pprf_total_supply as u128;
+
+    yes_votes_u128 * 3 >= no_votes_u128 * 4 &&
+    yes_votes_u128 * 10 > total_supply_u128
 }
 
 fun assert_valid_proposal_action_pair(

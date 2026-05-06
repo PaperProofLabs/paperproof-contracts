@@ -23,7 +23,9 @@ It intentionally **does not execute any successful executable governance action*
 - [mainnet-governance-finalize.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/mainnet-governance-finalize.mjs)
   - next-day finalize script
   - currently hardcoded for the live mainnet governance test proposal
-  - finalizes the active proposal after its end epoch
+  - if the outcome is already mathematically fixed while voting is still open,
+    it first tries `resolve_proposal_early`
+  - otherwise it finalizes the active proposal after its end epoch
   - reclaims proposer-locked `PPRF`
 - [paperproof-mainnet-common.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/paperproof-mainnet-common.mjs)
   - shared helpers for:
@@ -153,7 +155,8 @@ npm run finalize
 
 That second script will:
 
-- finalize the proposal
+- either resolve the proposal early when the result is already fixed, or
+  finalize it after the end epoch
 - verify it becomes `REJECTED`
 - reclaim locked `PPRF` for `ADDR_1`
 - verify `ADDR_2` / `ADDR_3` cannot claim because no successful vote was recorded
@@ -191,6 +194,9 @@ These runtime files are ignored by Git.
 - the main script refuses to proceed if an active proposal already exists
 - the main script now blocks cleanly when a prior governance test proposal is
   still active
+- the finalize script now has a dual settlement path:
+  - `resolve_proposal_early` if the outcome is already mathematically fixed
+  - `finalize_proposal` once the proposal end epoch has passed
 - repeated mainnet runs are still not fully idempotent; they create fresh paper
   records and comments when allowed to proceed
 

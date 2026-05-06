@@ -24,6 +24,8 @@ const UPGRADE_AUTHORITY: address = @0x11;
 const PROPOSER_THRESHOLD: u64 = 10_000_000_000_000_000;
 const QUORUM_PASS_VOTES: u64 = 1_500_000_000_000_000_000;
 const LOW_QUORUM_VOTES: u64 = 900_000_000_000_000_000;
+const EARLY_PASS_VOTES: u64 = 6_000_000_000_000_000_000;
+const EARLY_FAIL_NO_VOTES: u64 = 8_000_000_000_000_000_000;
 const MIN_VOTE_PLUS_ONE: u64 = 100_000_000_001;
 const UPDATED_PROPOSER_THRESHOLD: u64 = 20_000_000_000_000_000;
 const UPDATED_PROPOSAL_DURATION: u64 = 7;
@@ -55,6 +57,14 @@ fun advance_beyond_voting_period(scenario: &mut ts::Scenario, sender: address) {
     let duration = voting::default_proposal_duration_epochs();
     let mut i = 0;
     while (i < duration) {
+        ts::next_epoch(scenario, sender);
+        i = i + 1;
+    };
+}
+
+fun advance_epochs(scenario: &mut ts::Scenario, sender: address, count: u64) {
+    let mut i = 0;
+    while (i < count) {
         ts::next_epoch(scenario, sender);
         i = i + 1;
     };
@@ -500,6 +510,236 @@ fun test_upgrade_authority_update_uses_existing_governance_flow() {
 }
 
 #[test]
+fun test_passed_proposal_expires_when_executed_too_late() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x40D));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b"Expire comments fee vote"),
+            string::utf8(b"Passed proposal should expire after three epochs"),
+            3,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(QUORUM_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        assert!(voting::proposal_status(&proposal) == voting::proposal_status_passed(), 44);
+        assert!(voting::execution_expiry_epoch(&proposal) == voting::proposal_end_epoch(&proposal) + voting::execution_validity_epochs(), 45);
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    advance_epochs(&mut scenario, ADMIN, voting::execution_validity_epochs() + 1);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+
+        voting::execute_proposal(
+            &mut config,
+            &mut proposal,
+            &mut vault,
+            ts::ctx(&mut scenario),
+        );
+
+        assert!(voting::proposal_status(&proposal) == voting::proposal_status_expired(), 46);
+        assert!(!voting::proposal_executed(&proposal), 47);
+        assert!(governance::comments_fee_level(&vault) == 0, 48);
+
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_passed_proposal_can_be_expired_explicitly() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x40E));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_fee_recipient(),
+            string::utf8(b"Expire fee recipient vote"),
+            string::utf8(b"Anyone should be able to mark stale passed proposal as expired"),
+            0,
+            0,
+            FEE_RECIPIENT,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(QUORUM_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    advance_epochs(&mut scenario, VOTER1, voting::execution_validity_epochs() + 1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::expire_passed_proposal(&mut proposal, ts::ctx(&mut scenario));
+        assert!(voting::proposal_status(&proposal) == voting::proposal_status_expired(), 49);
+        ts::return_shared(proposal);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_early_resolution_passes_when_remaining_votes_cannot_flip_result() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x40F));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b"Early pass"),
+            string::utf8(b"Should pass before end when all remaining NO votes cannot flip it"),
+            4,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(EARLY_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        assert!(voting::outcome_determinable(&config, &proposal), 62);
+        voting::resolve_proposal_early(&mut config, &mut proposal);
+        assert!(voting::proposal_status(&proposal) == voting::proposal_status_passed(), 63);
+        assert!(option::is_none(&voting::active_proposal_id(&config)), 64);
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_early_resolution_rejects_when_remaining_votes_cannot_save_result() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x410));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b"Early reject"),
+            string::utf8(b"Should reject before end when remaining YES votes cannot save it"),
+            1,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_no(
+            &mut proposal,
+            mint_votes(EARLY_FAIL_NO_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        assert!(voting::outcome_determinable(&config, &proposal), 65);
+        voting::resolve_proposal_early(&mut config, &mut proposal);
+        assert!(voting::proposal_status(&proposal) == voting::proposal_status_rejected(), 66);
+        assert!(option::is_none(&voting::active_proposal_id(&config)), 67);
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 6, location = paperproof_governance::governance_voting)]
 fun test_double_vote_is_rejected() {
     let mut scenario = ts::begin(ADMIN);
@@ -752,6 +992,44 @@ fun test_invalid_proposer_threshold_rejected_at_creation() {
             mint_votes(PROPOSER_THRESHOLD, &mut scenario),
             ts::ctx(&mut scenario),
         );
+        ts::return_shared(config);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 27, location = paperproof_governance::governance_voting)]
+fun test_early_resolution_rejected_when_result_is_not_yet_determinable() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x411));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_signal(),
+            voting::action_signal_policy_position(),
+            string::utf8(b"Too early"),
+            string::utf8(b"Should not be resolvable yet"),
+            0,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::resolve_proposal_early(&mut config, &mut proposal);
+        ts::return_shared(proposal);
         ts::return_shared(config);
     };
 

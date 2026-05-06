@@ -349,6 +349,7 @@ const PROPOSAL_STATUS_ACTIVE: u8 = 1;
 const PROPOSAL_STATUS_PASSED: u8 = 2;
 const PROPOSAL_STATUS_REJECTED: u8 = 3;
 const PROPOSAL_STATUS_EXECUTED: u8 = 4;
+const PROPOSAL_STATUS_EXPIRED: u8 = 5;
 ```
 
 ## Core Functions
@@ -439,6 +440,28 @@ Finalization:
 - determines `PASSED` or `REJECTED`;
 - and clears `active_proposal_id`.
 
+### Resolve Proposal Early
+
+```move
+public fun resolve_proposal_early(
+    config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+)
+```
+
+This function allows any caller to close an still-active proposal before
+`end_epoch`, but only when the outcome is already mathematically fixed under
+the current governance rule.
+
+That means:
+
+- a proposal may resolve early as `PASSED` when even allocating all remaining
+  uncast voting supply to `NO` still cannot overturn it; or
+- a proposal may resolve early as `REJECTED` when even allocating all
+  remaining uncast voting supply to `YES` still cannot rescue it.
+
+If the outcome is not yet determinable, the call aborts.
+
 ### Execute Proposal
 
 ```move
@@ -455,7 +478,23 @@ Execution is restricted to:
 - executable proposals only;
 - proposals already finalized as `PASSED`;
 - proposals not yet executed; and
-- proposals whose execution delay has elapsed.
+- proposals whose execution window has not expired.
+
+### Expire Passed Proposal
+
+```move
+public fun expire_passed_proposal(
+    proposal: &mut Proposal,
+    ctx: &TxContext,
+)
+```
+
+This function:
+
+- applies only to executable proposals;
+- requires the proposal to still be in `PASSED` state;
+- requires the execution window to have already expired; and
+- marks the proposal as `EXPIRED`.
 
 ### Claim Locked Tokens
 
@@ -479,9 +518,29 @@ When a directly executable proposal passes:
 
 1. the proposal remains a governance object with on-chain legitimacy;
 2. the protocol can verify that its passage conditions were satisfied;
-3. `execute_proposal` applies the result to `GovernanceVault`; and
+3. `execute_proposal` applies the result to `GovernanceVault` only if it is
+   called within the execution-validity window; and
 4. `GovernanceVault` acts as the bridge from token governance to protocol
    state.
+
+### Execution Validity Window
+
+Passed executable proposals do not remain executable forever.
+
+The current implementation gives every passed executable proposal a fixed
+execution-validity window of:
+
+- `3` epochs after `end_epoch`
+
+That means:
+
+- if execution happens on time, the proposal becomes `EXECUTED`;
+- if execution is attempted after the window, the proposal is marked
+  `EXPIRED`; and
+- any account may also explicitly call `expire_passed_proposal` after the
+  window to clear a stale passed proposal into `EXPIRED`.
+
+This prevents old passed proposals from remaining executable indefinitely.
 
 This means:
 
@@ -489,6 +548,18 @@ This means:
 - `GovernanceVault` is the canonical executor for governance-approved changes;
 - the current operator remains an execution-layer role rather than the source
   of legitimacy.
+
+### Early Resolution Model
+
+PaperProof governance now supports two distinct ways to close an active
+proposal:
+
+1. normal finalization after `end_epoch` through `finalize_proposal`
+2. early resolution before `end_epoch` through `resolve_proposal_early`, when
+   the outcome is already fixed by arithmetic
+
+This lets governance converge sooner when additional votes can no longer change
+the result, while keeping closure permission open to any caller.
 
 ## Governance Rules
 
@@ -597,6 +668,36 @@ However, the live duration remains bounded:
 This preserves a flexible production voting policy without allowing arbitrary
 extreme durations through governance.
 
+## 9. Bounded Execution Window for Passed Proposals
+
+PaperProof also now distinguishes between:
+
+- the voting window of a proposal; and
+- the execution window of a passed executable proposal.
+
+The voting window is governance-configurable within the allowed runtime range.
+
+The execution window is currently fixed at:
+
+- `3` epochs after `end_epoch`
+
+This value is not currently governance-configurable. It exists to ensure that
+old passed proposals cannot remain executable forever.
+
+## 10. Permissionless Proposal Closure
+
+Proposal closure is intentionally permissionless.
+
+Any account may:
+
+- finalize a proposal after its voting window ends;
+- resolve a proposal early if the result is already determinable; and
+- mark a stale passed executable proposal as expired after its execution window
+  has elapsed.
+
+This prevents proposal lifecycle progress from depending on a single operator
+or proposer address.
+
 ## Implemented Test Coverage
 
 Current governance voting tests cover:
@@ -606,10 +707,14 @@ Current governance voting tests cover:
 - signal proposals that pass but are not executable;
 - duplicate vote rejection;
 - low-quorum rejection;
+- early pass resolution while voting is still active;
+- early rejection resolution while voting is still active;
+- rejection of premature early-resolution attempts;
 - single-active-proposal enforcement;
 - operator nomination and handoff execution;
 - proposer-threshold updates through governance itself;
 - proposal-duration updates through governance itself; and
+- late execution expiry and explicit expiry of stale passed proposals; and
 - address-based token claims after proposal finalization.
 
 Related test files:
@@ -628,6 +733,8 @@ above the existing PaperProof governance package. It:
 - uses lock-based voting with on-chain `Coin<PPRF>` custody;
 - starts with a `1`-epoch default voting window and allows governance to move
   the live duration into the `7`-to-`14` epoch runtime range;
+- gives passed executable proposals a fixed `3`-epoch execution-validity
+  window after `end_epoch`;
 - uses address-based post-finalization claims instead of transferable vote
   receipts;
 - enforces that only one proposal may be active at a time; and

@@ -33,6 +33,8 @@ mechanics:
 - the live proposal duration may later be changed through governance itself
   within the `7`-to-`14` epoch range
 - after the voting window ends, the proposal must be finalized on-chain
+- a still-active proposal may also be resolved early when its result is already
+  mathematically fixed under the current passage rule
 - locked voting funds are reclaimed later by the voter address itself
 
 The current proposal passage rule requires both:
@@ -62,6 +64,12 @@ In this mode:
 
 So, passage alone does **not** immediately mutate state. A passed executable
 proposal still requires an execution transaction.
+
+That execution right is also time-bounded:
+
+- a passed executable proposal is only executable for `3` epochs after its
+  `end_epoch`
+- after that, it must be treated as stale and can be marked `EXPIRED`
 
 This is a normal and deliberate separation between:
 
@@ -228,6 +236,33 @@ So in PaperProof, executable governance is best understood as:
 - **vote to authorize**
 - **execute to apply**
 
+But now with one additional rule:
+
+- **execute before the execution-validity window expires**
+
+If that does not happen, the proposal no longer remains safely executable
+indefinitely.
+
+## Early Resolution Before Voting End
+
+PaperProof governance also now allows a proposal to be closed before its
+configured `end_epoch`, but only when the final outcome can already be proven
+from the current vote totals and the remaining uncast voting supply.
+
+That means:
+
+- a proposal can resolve early as `PASSED` if even the worst-case remaining
+  `NO` votes cannot overturn it
+- a proposal can resolve early as `REJECTED` if even the best-case remaining
+  `YES` votes cannot rescue it
+
+This is permissionless:
+
+- any account may call the early-resolution interface
+
+If the result is still genuinely open, the call fails and the proposal remains
+active.
+
 ## Typical Use Cases for Executable Governance
 
 Examples of decisions that fit this mode:
@@ -238,6 +273,24 @@ Examples of decisions that fit this mode:
 - rotating the official upgrade authority
 - replacing the active operator
 - changing proposal-spam resistance parameters
+
+## Execution Expiry for Passed Proposals
+
+Executable proposals are no longer valid forever after passage.
+
+The current rule is:
+
+- once an executable proposal has passed, it remains executable only until
+  `end_epoch + 3`
+
+After that point:
+
+- a late `execute_proposal` attempt will not apply the action;
+- instead, the proposal is marked `EXPIRED`; and
+- any account may also explicitly mark the stale passed proposal as expired.
+
+This prevents an old passed proposal from lingering indefinitely as a latent
+governance risk.
 
 These are all protocol-state decisions and are therefore good candidates for
 direct execution.

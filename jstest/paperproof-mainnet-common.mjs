@@ -58,6 +58,7 @@ export const GOVERNANCE = Object.freeze({
   proposalTypeExecutable: 1,
   proposalTypeSignal: 2,
   actionSetCommentsFeeLevel: 2,
+  executionValidityEpochs: 3,
 });
 
 export const COMMENTS = Object.freeze({
@@ -1037,6 +1038,43 @@ export async function finalizeProposal(rpcClient, signer, proposalObjectId) {
   });
 
   return executeTransaction(rpcClient, signer, tx, `finalize proposal ${proposalObjectId}`);
+}
+
+export async function resolveProposalEarly(rpcClient, signer, proposalObjectId) {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: contractTarget(CONTRACTS.governancePackageId, 'governance_voting', 'resolve_proposal_early'),
+    arguments: [
+      tx.object(CONTRACTS.governanceConfigId),
+      tx.object(proposalObjectId),
+    ],
+  });
+
+  return executeTransaction(rpcClient, signer, tx, `resolve proposal early ${proposalObjectId}`);
+}
+
+export function governancePassageSatisfied(totalSupplyRaw, yesVotesRaw, noVotesRaw) {
+  const totalSupply = BigInt(totalSupplyRaw);
+  const yesVotes = BigInt(yesVotesRaw);
+  const noVotes = BigInt(noVotesRaw);
+  return yesVotes * 3n >= noVotes * 4n && yesVotes * 10n > totalSupply;
+}
+
+export function governanceOutcomeDeterminable(totalSupplyRaw, yesVotesRaw, noVotesRaw) {
+  const totalSupply = BigInt(totalSupplyRaw);
+  const yesVotes = BigInt(yesVotesRaw);
+  const noVotes = BigInt(noVotesRaw);
+  const remaining = totalSupply - yesVotes - noVotes;
+
+  const deterministicPass = governancePassageSatisfied(totalSupply, yesVotes, noVotes + remaining);
+  const deterministicFail = !governancePassageSatisfied(totalSupply, yesVotes + remaining, noVotes);
+
+  return {
+    determinable: deterministicPass || deterministicFail,
+    deterministicPass,
+    deterministicFail,
+    remainingVotingSupply: remaining,
+  };
 }
 
 export async function claimLockedTokens(rpcClient, signer, proposalObjectId, expectFailure = false) {
