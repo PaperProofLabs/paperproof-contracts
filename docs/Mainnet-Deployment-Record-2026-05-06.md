@@ -18,7 +18,8 @@ record for this date.
 
 - `PPRF` package: `0x5d2ec9829a9e116de7c2008281a90b96690beb2252af120ad05a25fe13fae0da`
 - `PPRF` type: `0x5d2ec9829a9e116de7c2008281a90b96690beb2252af120ad05a25fe13fae0da::pprf::PPRF`
-- `paperproof_governance` package: `0x75923624e354789e995537e88afaab698bd405a61f91926e3f8837fb7cc6b5cf`
+- `paperproof_governance` original package: `0x75923624e354789e995537e88afaab698bd405a61f91926e3f8837fb7cc6b5cf`
+- `paperproof_governance` latest package: `0xc1ced3b8ae5281eeeb8cdb5527978e294c54f14a7fd8d65e7e9502d4ffffb87e`
 - `paperproof_comments` package: `0xaef346fc40bf20af62f4bbbc1608ba2272e80e4ba3d716634026baa589e9aeba`
 - `paperproof_publishing` package: `0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782`
 
@@ -28,6 +29,23 @@ record for this date.
 - Comments publish tx: `F4ytUL3rytWuf75ALU8gEfAcfFmXzn3G3cdAWEXZJGBU`
 - Publishing publish and root initialization tx: `GSgK9mHjsWdwmVTfDfdWLwrVeBHXKn43HTa92D42tDNR`
 - GovernanceConfig creation and vault binding tx: `DXoa8uRy7vEu1dTJzzgVNYLc8WKLN5ksADjVSPidtBaV`
+- Governance v2 upgrade tx: `8TpVmJuCMYwpesBdQmazK4fgfcweihL6vcRZumcjX8Cv`
+- GovernanceConfig v2 action migration tx: `9PxfYxXzNkwHqpAgPAkDrhr8pr6DweZZUSpnLRSNiBU6`
+
+## Governance v2 Upgrade
+
+The governance package was upgraded on 2026-05-08 to add
+`set_governance_authority`, `GovernanceAuthorityChangedEvent`, and executable
+proposal action `ACTION_SET_GOVERNANCE_AUTHORITY`.
+
+- Original package ID: `0x75923624e354789e995537e88afaab698bd405a61f91926e3f8837fb7cc6b5cf`
+- Latest package ID: `0xc1ced3b8ae5281eeeb8cdb5527978e294c54f14a7fd8d65e7e9502d4ffffb87e`
+- UpgradeCap version after upgrade: `2`
+- GovernanceConfig migration: completed
+- Enabled governance actions table size after migration: `17`
+- New governance action constant: `15`
+- Raw upgrade output: `governance/upgrade-mainnet-v2-2026-05-08.json`
+- Raw config migration output: `governance/migrate-config-mainnet-v2-2026-05-08.json`
 
 ## UpgradeCap Custody
 
@@ -70,7 +88,7 @@ after deployment, as requested.
 - Proposal duration epochs: `1`
 - Active proposal ID: none
 - Captured `PPRF` total supply: `10000000000000000000`
-- Enabled governance actions table size: `16`
+- Enabled governance actions table size: `17`
 
 ## Fee Configuration
 
@@ -133,6 +151,8 @@ The raw publish/init command outputs were saved locally:
 - `comments/publish-mainnet-2026-05-07.json`
 - `publishing/publish-mainnet-2026-05-07.json`
 - `governance/init-governance-config-mainnet-2026-05-07.json`
+- `governance/upgrade-mainnet-v2-2026-05-08.json`
+- `governance/migrate-config-mainnet-v2-2026-05-08.json`
 
 Previous package publication records were preserved as:
 

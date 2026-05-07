@@ -47,7 +47,7 @@ fun test_vault_defaults_and_fee_setters() {
     ts::next_tx(&mut scenario, ADMIN);
     {
         let mut vault = ts::take_shared<GovernanceVault>(&scenario);
-        let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
         assert!(governance::governance_vault_version(&vault) == governance::current_governance_vault_version(), 0);
         assert!(governance::fee_recipient(&vault) == ADMIN, 0);
         assert!(governance::comments_fee_level(&fee_manager) == 0, 2);
@@ -56,6 +56,16 @@ fun test_vault_defaults_and_fee_setters() {
         governance::migrate_vault(&mut vault, ts::ctx(&mut scenario));
 
         governance::set_fee_recipient(&mut vault, FEE_RECIPIENT, ts::ctx(&mut scenario));
+        governance::set_governance_authority(&mut vault, NEW_OPERATOR, ts::ctx(&mut scenario));
+        assert!(governance::governance_authority(&vault) == NEW_OPERATOR, 40);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, NEW_OPERATOR);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
         governance::set_upgrade_authority(&mut vault, UPGRADE_AUTHORITY, ts::ctx(&mut scenario));
         governance::set_comments_fee_level(&vault, &mut fee_manager, 5, ts::ctx(&mut scenario));
 
@@ -65,6 +75,91 @@ fun test_vault_defaults_and_fee_setters() {
 
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 3, location = paperproof_governance::governance)]
+fun test_old_governance_authority_loses_direct_access_after_transfer() {
+    let mut scenario = ts::begin(ADMIN);
+
+    {
+        let (vault, permit) = governance::new_vault(
+            object::id_from_address(@0x311),
+            ADMIN,
+            OPERATOR,
+            ts::ctx(&mut scenario),
+        );
+        governance::share_vault(vault);
+        transfer::public_transfer(permit, OPERATOR);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        governance::set_governance_authority(&mut vault, NEW_OPERATOR, ts::ctx(&mut scenario));
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        governance::set_fee_recipient(&mut vault, FEE_RECIPIENT, ts::ctx(&mut scenario));
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 3, location = paperproof_governance::governance)]
+fun test_non_governance_authority_cannot_transfer_governance_authority() {
+    let mut scenario = ts::begin(ADMIN);
+
+    {
+        let (vault, permit) = governance::new_vault(
+            object::id_from_address(@0x312),
+            ADMIN,
+            OPERATOR,
+            ts::ctx(&mut scenario),
+        );
+        governance::share_vault(vault);
+        transfer::public_transfer(permit, OPERATOR);
+    };
+
+    ts::next_tx(&mut scenario, OPERATOR);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        governance::set_governance_authority(&mut vault, NEW_OPERATOR, ts::ctx(&mut scenario));
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 1, location = paperproof_governance::governance)]
+fun test_governance_authority_cannot_be_zero() {
+    let mut scenario = ts::begin(ADMIN);
+
+    {
+        let (vault, permit) = governance::new_vault(
+            object::id_from_address(@0x313),
+            ADMIN,
+            OPERATOR,
+            ts::ctx(&mut scenario),
+        );
+        governance::share_vault(vault);
+        transfer::public_transfer(permit, OPERATOR);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        governance::set_governance_authority(&mut vault, @0x0, ts::ctx(&mut scenario));
+        ts::return_shared(vault);
     };
 
     ts::end(scenario);

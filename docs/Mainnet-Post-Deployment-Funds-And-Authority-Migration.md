@@ -13,6 +13,10 @@ architectural.
 - Initial `OperatorPermit`: `0xbfc867a7a95f6808a42c448fc80f31952752d7faf32bdcd9b7ee8ff86489c634`
 - Governance, upgrade, operator, and fee-recipient roles currently all point to
   the deployer/current custodian.
+- Governance v2 package: `0xc1ced3b8ae5281eeeb8cdb5527978e294c54f14a7fd8d65e7e9502d4ffffb87e`
+- Governance authority migration support: available through direct
+  `set_governance_authority` and executable governance action
+  `ACTION_SET_GOVERNANCE_AUTHORITY` (`15`).
 
 ## Migration Goals
 
@@ -129,6 +133,20 @@ Record:
 
 Move `GovernanceVault.governance_authority` to the intended governance address
 only after the operator, fee recipient, and upgrade plan are clear.
+
+Direct path:
+
+```powershell
+sui client ptb --move-call 0xc1ced3b8ae5281eeeb8cdb5527978e294c54f14a7fd8d65e7e9502d4ffffb87e::governance::set_governance_authority '@0x0df35aa53ef37f8ca8f6a6280d743effa6e0bfc613c5c6c0a78318ad4a38f875' @NEW_GOVERNANCE_AUTHORITY
+```
+
+Governance proposal path:
+
+- create an executable proposal using action `15`
+- set `payload_address` to the new governance authority
+- leave `payload_u64_1`, `payload_u64_2`, object payload, and bytes payload
+  unused
+- finalize and execute the proposal after voting passes
 
 After the change:
 

@@ -43,6 +43,9 @@ Current documents include:
   checklist for moving funds, role authorities, operator custody, fee
   recipient, and package `UpgradeCap` custody after the 2026-05-07 mainnet
   deployment
+- `Mainnet-Governance-v2-Upgrade-2026-05-08.md`: record of the governance v2
+  mainnet package upgrade, including `governance_authority` migration support,
+  test coverage, transaction digests, and post-upgrade parameters
 - `Mainnet-GoLive-Checklist.md`: concise launch-readiness checklist for final
   mainnet validation before opening the official frontend to the public
 - `Second-Round-Prelaunch-Audit.md`: second-round prelaunch security review,

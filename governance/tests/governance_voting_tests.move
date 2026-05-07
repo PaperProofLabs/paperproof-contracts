@@ -1591,6 +1591,113 @@ fun test_governance_action_can_be_disabled_and_reenabled_by_vote() {
 }
 
 #[test]
+#[expected_failure(abort_code = 3, location = paperproof_governance::governance)]
+fun test_governance_authority_can_be_changed_by_vote() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x418));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_governance_authority(),
+            string::utf8(b"Transfer governance authority"),
+            string::utf8(b"Move governance authority to a new custodian"),
+            0,
+            0,
+            VOTER1,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(QUORUM_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        voting::execute_proposal(&mut config, &mut proposal, &mut vault, ts::ctx(&mut scenario));
+        assert!(governance::governance_authority(&vault) == VOTER1, 90);
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
+        governance::set_fee_recipient(&mut vault, FEE_RECIPIENT, ts::ctx(&mut scenario));
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 4, location = paperproof_governance::governance_voting)]
+fun test_governance_authority_vote_rejects_zero_address_payload() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x419));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_governance_authority(),
+            string::utf8(b"Transfer governance authority"),
+            string::utf8(b"Zero address should fail at proposal creation"),
+            0,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_migrate_config_enables_governance_authority_action_for_existing_config() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x41A));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        voting::migrate_config(&mut config, &vault, ts::ctx(&mut scenario));
+        assert!(voting::action_enabled(&config, voting::action_set_governance_authority()), 91);
+        ts::return_shared(config);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 28, location = paperproof_governance::governance_voting)]
 fun test_disabled_governance_action_rejects_new_proposal() {
     let mut scenario = ts::begin(ADMIN);

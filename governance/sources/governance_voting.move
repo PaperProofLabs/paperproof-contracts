@@ -69,6 +69,7 @@ const ACTION_ACTIVATE_ARTIFACT_TYPE: u8 = 11;
 const ACTION_SET_GOVERNANCE_ACTION_ENABLED: u8 = 12;
 const ACTION_SET_DIRECT_AUTHORITY_MODE: u8 = 13;
 const ACTION_CANCEL_OPERATOR_TRANSFER: u8 = 14;
+const ACTION_SET_GOVERNANCE_AUTHORITY: u8 = 15;
 
 const ACTION_SIGNAL_REPLACE_OPERATOR: u8 = 101;
 const ACTION_SIGNAL_FEATURE_DIRECTION: u8 = 102;
@@ -288,6 +289,9 @@ public fun migrate_config(
     assert!(governance::governance_config_id(vault) == object::id(config), E_INVALID_VAULT_REGISTRY);
     governance::assert_upgrade_authority(vault, tx_context::sender(ctx));
     migrate_config_version(config);
+    if (!table::contains(&config.enabled_actions, ACTION_SET_GOVERNANCE_AUTHORITY)) {
+        table::add(&mut config.enabled_actions, ACTION_SET_GOVERNANCE_AUTHORITY, true);
+    };
     event::emit(GovernanceConfigMigratedEvent {
         registry_id: config.registry_id,
         migrated_by: tx_context::sender(ctx),
@@ -530,6 +534,8 @@ public fun execute_proposal(
         apply_action_enabled(config, target_action, proposal.payload_u64_2 == 1, tx_context::sender(ctx));
     } else if (proposal.action_type == ACTION_SET_DIRECT_AUTHORITY_MODE) {
         governance::apply_direct_authority_mode_from_vote(vault, proposal.payload_u64_1 as u8, tx_context::sender(ctx));
+    } else if (proposal.action_type == ACTION_SET_GOVERNANCE_AUTHORITY) {
+        governance::apply_governance_authority(vault, proposal.payload_address, tx_context::sender(ctx));
     } else if (proposal.action_type == ACTION_CANCEL_OPERATOR_TRANSFER) {
         abort E_INVALID_ACTION_TYPE
     } else {
@@ -918,6 +924,10 @@ public fun action_cancel_operator_transfer(): u8 {
     ACTION_CANCEL_OPERATOR_TRANSFER
 }
 
+public fun action_set_governance_authority(): u8 {
+    ACTION_SET_GOVERNANCE_AUTHORITY
+}
+
 public fun action_signal_replace_operator(): u8 {
     ACTION_SIGNAL_REPLACE_OPERATOR
 }
@@ -1052,6 +1062,7 @@ fun default_enabled_actions(ctx: &mut TxContext): Table<u8, bool> {
     table::add(&mut actions, ACTION_SET_GOVERNANCE_ACTION_ENABLED, true);
     table::add(&mut actions, ACTION_SET_DIRECT_AUTHORITY_MODE, true);
     table::add(&mut actions, ACTION_CANCEL_OPERATOR_TRANSFER, true);
+    table::add(&mut actions, ACTION_SET_GOVERNANCE_AUTHORITY, true);
     table::add(&mut actions, ACTION_SIGNAL_REPLACE_OPERATOR, true);
     table::add(&mut actions, ACTION_SIGNAL_FEATURE_DIRECTION, true);
     table::add(&mut actions, ACTION_SIGNAL_POLICY_POSITION, true);
@@ -1187,7 +1198,8 @@ fun assert_valid_proposal_action_pair(
             action_type == ACTION_ACTIVATE_ARTIFACT_TYPE ||
             action_type == ACTION_SET_GOVERNANCE_ACTION_ENABLED ||
             action_type == ACTION_SET_DIRECT_AUTHORITY_MODE ||
-            action_type == ACTION_CANCEL_OPERATOR_TRANSFER,
+            action_type == ACTION_CANCEL_OPERATOR_TRANSFER ||
+            action_type == ACTION_SET_GOVERNANCE_AUTHORITY,
             E_EXECUTABLE_ACTION_NOT_ALLOWED,
         );
     } else if (proposal_type == PROPOSAL_TYPE_SIGNAL) {
@@ -1217,6 +1229,7 @@ fun assert_known_action(action_type: u8) {
         action_type == ACTION_SET_GOVERNANCE_ACTION_ENABLED ||
         action_type == ACTION_SET_DIRECT_AUTHORITY_MODE ||
         action_type == ACTION_CANCEL_OPERATOR_TRANSFER ||
+        action_type == ACTION_SET_GOVERNANCE_AUTHORITY ||
         action_type == ACTION_SIGNAL_REPLACE_OPERATOR ||
         action_type == ACTION_SIGNAL_FEATURE_DIRECTION ||
         action_type == ACTION_SIGNAL_POLICY_POSITION,
@@ -1267,6 +1280,8 @@ fun assert_valid_proposal_payload(
         governance::assert_valid_direct_authority_mode(payload_u64_1 as u8);
     } else if (action_type == ACTION_CANCEL_OPERATOR_TRANSFER) {
         // No payload required. Object arguments are checked at execution.
+    } else if (action_type == ACTION_SET_GOVERNANCE_AUTHORITY) {
+        assert!(payload_address != @0x0, E_INVALID_ACTION_TYPE);
     } else {
         abort E_INVALID_ACTION_TYPE
     };

@@ -179,6 +179,13 @@ public struct FeeRecipientChangedEvent has copy, drop {
     new_fee_recipient: address,
 }
 
+public struct GovernanceAuthorityChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    old_governance_authority: address,
+    new_governance_authority: address,
+}
+
 public struct CommentsFeeLevelChangedEvent has copy, drop {
     registry_id: ID,
     changed_by: address,
@@ -745,6 +752,17 @@ public fun set_fee_recipient(
     apply_fee_recipient(vault, new_fee_recipient, tx_context::sender(ctx));
 }
 
+public fun set_governance_authority(
+    vault: &mut GovernanceVault,
+    new_governance_authority: address,
+    ctx: &TxContext,
+) {
+    assert_current_vault(vault);
+    assert_direct_authority_allowed(vault, true);
+    assert!(tx_context::sender(ctx) == vault.governance_authority, E_NOT_GOVERNANCE_AUTHORITY);
+    apply_governance_authority(vault, new_governance_authority, tx_context::sender(ctx));
+}
+
 public fun set_upgrade_authority(
     vault: &mut GovernanceVault,
     new_upgrade_authority: address,
@@ -806,6 +824,22 @@ public(package) fun apply_fee_recipient(
         changed_by,
         old_fee_recipient,
         new_fee_recipient,
+    });
+}
+
+public(package) fun apply_governance_authority(
+    vault: &mut GovernanceVault,
+    new_governance_authority: address,
+    changed_by: address,
+) {
+    assert!(new_governance_authority != @0x0, E_INVALID_GOVERNANCE_AUTHORITY);
+    let old_governance_authority = vault.governance_authority;
+    vault.governance_authority = new_governance_authority;
+    event::emit(GovernanceAuthorityChangedEvent {
+        registry_id: vault.registry_id,
+        changed_by,
+        old_governance_authority,
+        new_governance_authority,
     });
 }
 
