@@ -87,23 +87,24 @@ UpgradeCap makes code available.
 Governance enables protocol capabilities.
 ```
 
-## Proposal-Ticket Governance Actions
+## Executor-Cap Governance Actions
 
 Fee-manager and publishing-specific artifact actions are executable governance
 actions, but they are not executed directly by `governance_voting`.
 
-Current proposal-ticket actions are:
+Current executor-cap actions are:
 
 - `ACTION_SET_COMMENTS_FEE_LEVEL`
 - `ACTION_SET_ARTIFACT_TYPE_ENABLED`
 - `ACTION_SET_ARTIFACT_FEE_LEVEL`
 - `ACTION_ACTIVATE_ARTIFACT_TYPE`
 
-Comments fee changes consume the proposal into a `GovernanceActionTicket` and
-apply the approved fee level to `FeeManager`.
+These actions must be executed through an official application entrypoint that
+can borrow the `GovernanceActionExecutorCap` embedded in `PaperProofRoot`.
 
-Publishing artifact actions are executed through publishing package entrypoints:
+Publishing exposes the official entrypoints:
 
+- `publishing::execute_comments_fee_level_proposal`
 - `publishing::execute_artifact_type_enabled_proposal`
 - `publishing::execute_artifact_fee_level_proposal`
 - `publishing::execute_artifact_type_activation_proposal`
@@ -114,8 +115,8 @@ cycle.
 
 ## Governance Action Tickets
 
-For proposal-ticket execution, `governance_voting` consumes a passed proposal
-and returns a one-time `GovernanceActionTicket`.
+For executor-cap execution, `governance_voting` consumes a passed proposal and
+returns a one-time `GovernanceActionTicket`.
 
 The ticket is created only by:
 
@@ -123,9 +124,16 @@ The ticket is created only by:
 governance_voting::consume_executable_proposal_action
 ```
 
-That function verifies:
+That function also requires a `GovernanceActionExecutorCap` bound to the same
+official `GovernanceVault` object. `PaperProofRoot` owns the official cap, so a
+caller cannot consume a proposal through an arbitrary same-registry vault or
+fee manager.
+
+The function verifies:
 
 - config and proposal versions
+- official executor cap binding
+- proposal/config binding through `proposal_id_to_object`
 - registry ID
 - proposal type is executable
 - proposal status is `PASSED`
@@ -135,8 +143,8 @@ That function verifies:
 
 It then marks the proposal executed and returns the ticket to the caller.
 
-The ticket lets another package apply the already-approved action without
-letting that package forge governance legitimacy.
+The ticket lets the official application entrypoint apply the already-approved
+action without letting external packages forge governance legitimacy.
 
 `GovernanceActionTicket` is linear and has no `drop` ability. A transaction that
 creates a ticket must pass it to the appropriate application function in the
@@ -161,7 +169,9 @@ objects and wrapper tickets at execution time.
 
 ## Permissionless Execution
 
-Proposal execution and proposal-ticket consumption are permissionless.
+Proposal execution remains permissionless when called through official executor
+entrypoints. The raw ticket-consumption helper requires the official executor
+cap, so it is not a general external composition surface.
 
 Any account may trigger execution if it supplies the correct objects and the
 proposal satisfies the rules. This prevents a passed proposal from being held
@@ -195,7 +205,7 @@ The sunset mechanism only gates direct `governance_authority` mutations. It does
 not block:
 
 - PPRF proposal execution
-- proposal-ticket execution
+- executor-cap proposal execution
 - `upgrade_authority` package upgrade and migration functions
 - operator actions that are separately permit-gated
 
@@ -230,7 +240,8 @@ PaperProof separates:
 
 - governance legitimacy: voting and finalization
 - protocol execution: applying passed executable proposals
-- business-module execution: package-specific execution through proposal tickets
+- business-module execution: package-specific execution through official
+  executor-cap entrypoints
 - operational response: limited operator-gated actions
 - community intent: signal proposals
 

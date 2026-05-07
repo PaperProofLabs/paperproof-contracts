@@ -35,8 +35,8 @@ used to bypass fees.
 Publishing also checks that the supplied `FeeManager` object ID equals the
 official `fee_manager_id` recorded on `PaperProofRoot`, and that the supplied
 `GovernanceVault` object ID equals the official vault ID. Comments tree creation
-is similarly bounded by the official `TreeFactoryCap` created during publishing
-initialization.
+is similarly bounded by the official `TreeFactoryCap` embedded in
+`PaperProofRoot` during publishing initialization.
 
 ## Fee Recipient
 
@@ -61,15 +61,16 @@ treasury balance.
 Fee configuration is protocol configuration.
 
 Publishing artifact fees are changed by executable governance through proposal
-tickets:
+executor-cap entrypoints:
 
 - `ACTION_SET_ARTIFACT_FEE_LEVEL`
 - `ACTION_ACTIVATE_ARTIFACT_TYPE`
 
 Comments fees are also stored in `FeeManager` and can be changed through the
 comments fee governance action. After a proposal passes, a permissionless
-execution transaction consumes the proposal into a `GovernanceActionTicket`,
-then applies the approved comments fee level to `FeeManager`.
+execution transaction must go through the official publishing executor entrypoint,
+borrow the executor cap embedded in `PaperProofRoot`, consume the proposal, and
+apply the approved comments fee level to the official `FeeManager`.
 
 The direct authority path can still set the comments fee while direct authority
 is in full mode. That path is intentionally sunsettable by governance and should
@@ -99,7 +100,8 @@ The current model supports:
 - proposal-gated artifact fee changes
 - proposal-gated comments fee changes
 - immediate routing of fee revenue
-- foreign vault, fee manager, and comments tree factory rejection
+- foreign vault and fee manager rejection
+- root-embedded comments tree factory creation for official series
 
 It does not yet support:
 

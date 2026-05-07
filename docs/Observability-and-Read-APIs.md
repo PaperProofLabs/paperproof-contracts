@@ -18,7 +18,7 @@ The publishing package now emits artifact-level events:
 
 These events let indexers observe:
 
-- canonical root, registry, comments tree factory cap, and type-index object IDs
+- canonical root, registry, and type-index object IDs
 - first publication of an `ArtifactSeries`
 - typed version additions
 - current series status changes
@@ -35,11 +35,9 @@ loading every version object immediately.
 
 Important current publishing getters include:
 
-- root IDs: governance vault, fee manager, type registry, comments tree factory
-  cap
+- root IDs: governance vault, fee manager, and type registry
 - artifact type getters and `artifact_type_name`
 - type registry state: enabled flag, schema version, index object ID
-- `get_series_id_by_code`
 - series owner, type, code, current version, current version ID
 - series version IDs and comments tree ID
 - series metadata count, key, and value getters
@@ -47,11 +45,15 @@ Important current publishing getters include:
 - typed record header metadata count, key, and value getters
 - typed record field getters
 
-`TypeRegistry` is the source of truth for `artifact_type -> TypeIndex`.
-`TypeIndex` is the source of truth for `artifact_code -> ArtifactSeries ID`.
+`TypeRegistry` is the source of truth for artifact type activation and the
+type-index marker object. `TypeIndex` is no longer written during
+first-publication and is not the source of truth for
+`artifact_code -> ArtifactSeries ID`. Indexers should rebuild that mapping from
+`ArtifactPublishedEvent`, whose `series_id` and `artifact_code` fields are the
+canonical event pair.
 Version metadata is immutable after the version record is created. Series
-metadata can be replaced by the series owner, and successful updates emit
-`ArtifactSeriesMetadataUpdatedEvent`.
+metadata can be replaced only by the series owner while the series is `ACTIVE`,
+and successful updates emit `ArtifactSeriesMetadataUpdatedEvent`.
 
 ## Comments Events
 
@@ -66,12 +68,14 @@ The comments package emits:
 - `PaperUnlikedEvent`
 - `CommentsTreeMigratedEvent`
 
-The publishing root creates and records one official `TreeFactoryCap` during
-initialization. First-publication flows use that cap to create the official
-per-series `CommentsTree`.
+The publishing root creates and embeds one official `TreeFactoryCap` during
+initialization. First-publication flows borrow that internal capability to
+create the official per-series `CommentsTree` and its paired `LikesBook`.
 
 The like event names still include `Paper` for compatibility with the current
-comments module naming, but the tree target is now generalized:
+comments module naming, but likes are stored in the independent `LikesBook`.
+Like events include both the comments tree ID and the likes book ID, and the
+target is generalized:
 
 - `target_series_id`
 - `target_artifact_type`
@@ -94,17 +98,34 @@ Important comments getters include:
 - max on-chain comment bytes
 - max comment depth
 - comment fields
-- like count and per-address like state
-- tree factory cap ID
+- likes book ID
+- likes book registry, comments tree, target series, and target type
+- like count and per-address like state on the likes book
 - tree factory cap registry ID
 
 Official comments binding is determined by
-`ArtifactSeries.comments_tree_id`. Official comments tree creation is bounded by
-the shared `TreeFactoryCap` recorded on `PaperProofRoot`.
+`ArtifactSeries.comments_tree_id`. Official like binding is determined by
+`ArtifactSeries.likes_book_id`. Official comments tree and likes book creation
+is bounded by the root-embedded `TreeFactoryCap`.
 
 Replies can only be added under active comments. Hidden or deleted comments
 remain readable through getters, but they cannot continue receiving child
 comments.
+
+Comment status uses the following policy:
+
+- the root comment is structural and its status is immutable
+- `DELETED` is final and cannot be restored by the author or tree owner
+- a comment author can delete their own non-deleted comment
+- the tree owner can switch non-deleted comments between `ACTIVE` and `HIDDEN`
+- the tree owner can delete non-deleted comments
+- a comment author cannot reactivate a comment hidden by the tree owner
+
+Indexers should still use `ArtifactSeries.comments_tree_id` and
+`ArtifactSeries.likes_book_id` as the canonical bindings. With the factory cap
+embedded in `PaperProofRoot`, ordinary callers cannot create official-looking
+trees through a shared factory object, but the series object remains the
+clearest source of truth for consumers.
 
 ## Governance Events
 
@@ -199,12 +220,13 @@ and action-enable targets.
 
 ## Proposal Ticket Observability
 
-Publishing-specific governance actions use a one-time
-`GovernanceActionTicket`.
+Publishing-specific and fee-manager governance actions use official executor
+entrypoints backed by the `GovernanceActionExecutorCap` embedded in
+`PaperProofRoot`.
 
-The ticket is not created during voting. It is created only when a passed
-executable proposal is consumed by
-`governance_voting::consume_executable_proposal_action`.
+A one-time `GovernanceActionTicket` is not created during voting. It is created
+only inside the execution transaction after the official executor cap has been
+checked against the official `GovernanceVault`.
 
 The resulting transaction also emits `ProposalExecutedEvent`. Off-chain systems
 should treat that event plus the corresponding publishing/governance state
@@ -218,13 +240,13 @@ Indexers should persist:
 - root object IDs
 - `TypeRegistry` object ID
 - `FeeManager` object ID
-- `TreeFactoryCap` object ID
 - every `TypeIndex` object ID
 - artifact code to series mapping
-- series current version and comments tree ID
+- series current version, comments tree ID, and likes book ID
 - series and version metadata extension key/value pairs
 - proposal lifecycle events
 - artifact type activation and fee events
+- proposal object IDs from `GovernanceConfig.proposal_id_to_object`
 
 Frontends should use getters for current canonical state and events for
 activity timelines.

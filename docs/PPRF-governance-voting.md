@@ -261,6 +261,9 @@ public struct GovernanceConfig has key {
   newly created proposals.
 - `proposal_creation_paused` allows governance to halt new proposal creation.
 - `active_proposal_id` enforces the single-active-proposal rule.
+- `proposal_id_to_object` binds each proposal number to the exact `Proposal`
+  object ID. Finalization, early resolution, execution, and executor-cap
+  proposal consumption must verify this binding before mutating proposal state.
 
 ## 2. `Proposal`
 
@@ -540,18 +543,20 @@ When a directly executable proposal passes:
 2. the protocol can verify that its passage conditions were satisfied;
 3. `execute_proposal` applies governance-internal results to `GovernanceVault`
    only if it is called within the execution-validity window; and
-4. package-specific execution can consume the proposal into a
-   `GovernanceActionTicket` and apply the approved change in the target package.
+4. package-specific execution can use the official executor cap, consume the
+   proposal into a `GovernanceActionTicket`, and apply the approved change in
+   the target package.
 
-Comments fee changes and publishing artifact actions use the ticket path. The
-vote remains in `governance_voting`; the approved action is consumed into a
-linear `GovernanceActionTicket`, and the target module applies the verified
-payload. The ticket has no `drop` ability, so a transaction that creates one
-must consume it in the same transaction.
+Comments fee changes and publishing artifact actions use official executor
+entrypoints backed by the `GovernanceActionExecutorCap` embedded in
+`PaperProofRoot`. The vote remains in `governance_voting`; the approved action
+is consumed into a linear `GovernanceActionTicket`, and the target module
+applies the verified payload. The ticket has no `drop` ability, so a
+transaction that creates one must consume it in the same transaction.
 
-Comments fee changes update `FeeManager` inside the governance package.
-Publishing artifact actions update `TypeRegistry` and artifact fee entries
-through publishing execution entrypoints.
+Comments fee changes update the official `FeeManager` through the publishing
+executor entrypoint. Publishing artifact actions update `TypeRegistry` and
+artifact fee entries through publishing execution entrypoints.
 
 ### Governance Action Availability
 
@@ -664,7 +669,7 @@ The modes are:
 the direct authority surface, and disabled mode is irreversible.
 
 This only gates direct `governance_authority` mutations. It does not disable
-PPRF proposal execution, proposal-ticket execution, `upgrade_authority`
+PPRF proposal execution, executor-cap proposal execution, `upgrade_authority`
 upgrade/migration functions, or separately permit-gated operator actions.
 
 ## 4. Operator Role

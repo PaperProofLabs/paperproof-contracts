@@ -3,7 +3,7 @@ module paperproof_governance::governance_voting_tests;
 
 use std::string;
 
-use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault, OperatorPermit};
+use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceActionExecutorCap, GovernanceVault, OperatorPermit};
 use paperproof_governance::governance_voting::{Self as voting, GovernanceConfig, Proposal};
 use pprf::pprf::{Self as pprf, PPRF};
 
@@ -38,7 +38,7 @@ fun init_vault_and_config(
     scenario: &mut ts::Scenario,
     registry_id: ID,
 ) {
-    let (mut vault, permit) = governance::new_vault(
+    let (mut vault, permit, executor_cap) = governance::new_vault_with_action_executor_cap(
         registry_id,
         ADMIN,
         OPERATOR,
@@ -52,6 +52,7 @@ fun init_vault_and_config(
     governance::share_vault(vault);
     governance::share_fee_manager(fee_manager);
     voting::share_governance_config(config);
+    transfer::public_transfer(executor_cap, ADMIN);
     transfer::public_transfer(permit, OPERATOR);
 }
 
@@ -161,21 +162,21 @@ fun test_create_execute_and_claim_fee_proposal() {
         let mut config = ts::take_shared<GovernanceConfig>(&scenario);
         let mut proposal = ts::take_shared<Proposal>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let action_executor_cap = ts::take_from_sender<GovernanceActionExecutorCap>(&scenario);
         let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
 
         voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
         assert!(voting::proposal_status(&proposal) == voting::proposal_status_passed(), 7);
         assert!(option::is_none(&voting::active_proposal_id(&config)), 8);
 
-        let ticket = voting::consume_executable_proposal_action(
+        voting::execute_comments_fee_level_proposal(
             &mut config,
             &mut proposal,
             &vault,
-            governance::registry_id(&vault),
-            voting::action_set_comments_fee_level(),
+            &action_executor_cap,
+            &mut fee_manager,
             ts::ctx(&mut scenario),
         );
-        governance::apply_comments_fee_level_from_ticket(&vault, &mut fee_manager, ticket);
 
         assert!(voting::proposal_executed(&proposal), 9);
         assert!(governance::comments_fee_level(&fee_manager) == 2, 10);
@@ -184,6 +185,7 @@ fun test_create_execute_and_claim_fee_proposal() {
         ts::return_shared(proposal);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_to_sender(&scenario, action_executor_cap);
     };
 
     ts::next_tx(&mut scenario, VOTER1);
@@ -831,6 +833,172 @@ fun test_passed_proposal_can_be_expired_explicitly() {
         let mut proposal = ts::take_shared<Proposal>(&scenario);
         voting::expire_passed_proposal(&mut proposal, ts::ctx(&mut scenario));
         assert!(voting::proposal_status(&proposal) == voting::proposal_status_expired(), 49);
+        ts::return_shared(proposal);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 6, location = paperproof_governance::governance)]
+fun test_foreign_action_executor_cap_cannot_consume_proposal() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x427));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b"Set comments fee"),
+            string::utf8(b"Foreign executor cap must not consume official proposal"),
+            2,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(QUORUM_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut fake_fee_manager = governance::new_fee_manager(governance::registry_id(&vault), ts::ctx(&mut scenario));
+        let (fake_vault, fake_permit, fake_executor_cap) =
+            governance::new_vault_with_action_executor_cap(
+                governance::registry_id(&vault),
+                ADMIN,
+                OPERATOR,
+                ts::ctx(&mut scenario),
+            );
+
+        let ticket = voting::consume_executable_proposal_action(
+            &mut config,
+            &mut proposal,
+            &vault,
+            &fake_executor_cap,
+            governance::registry_id(&vault),
+            voting::action_set_comments_fee_level(),
+            ts::ctx(&mut scenario),
+        );
+        governance::apply_comments_fee_level_from_ticket(&vault, &mut fake_fee_manager, ticket);
+
+        governance::share_vault(fake_vault);
+        transfer::public_transfer(fake_permit, OPERATOR);
+        transfer::public_transfer(fake_executor_cap, ADMIN);
+        governance::share_fee_manager(fake_fee_manager);
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+        ts::return_shared(vault);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 31, location = paperproof_governance::governance_voting)]
+fun test_fake_config_cannot_consume_real_proposal() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x428));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b"Set comments fee"),
+            string::utf8(b"Fake config must not consume this official proposal"),
+            2,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(
+            &mut proposal,
+            mint_votes(QUORUM_PASS_VOTES, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let real_vault = ts::take_shared<GovernanceVault>(&scenario);
+        let (mut fake_vault, fake_permit, fake_executor_cap) =
+            governance::new_vault_with_action_executor_cap(
+                governance::registry_id(&real_vault),
+                ADMIN,
+                OPERATOR,
+                ts::ctx(&mut scenario),
+            );
+        let mut fake_config = voting::new_governance_config(&mut fake_vault, ts::ctx(&mut scenario));
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let mut fake_fee_manager = governance::new_fee_manager(governance::registry_id(&real_vault), ts::ctx(&mut scenario));
+
+        let ticket = voting::consume_executable_proposal_action(
+            &mut fake_config,
+            &mut proposal,
+            &fake_vault,
+            &fake_executor_cap,
+            governance::registry_id(&real_vault),
+            voting::action_set_comments_fee_level(),
+            ts::ctx(&mut scenario),
+        );
+        governance::apply_comments_fee_level_from_ticket(&fake_vault, &mut fake_fee_manager, ticket);
+
+        ts::return_shared(real_vault);
+        governance::share_vault(fake_vault);
+        voting::share_governance_config(fake_config);
+        governance::share_fee_manager(fake_fee_manager);
+        transfer::public_transfer(fake_permit, OPERATOR);
+        transfer::public_transfer(fake_executor_cap, ADMIN);
         ts::return_shared(proposal);
     };
 

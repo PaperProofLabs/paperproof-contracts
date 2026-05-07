@@ -37,8 +37,8 @@ deps = { openzeppelin_access = "openzeppelin_access", pprf = "pprf", std = "Move
 [pinned.mainnet.paperproof_publishing]
 source = { root = true }
 use_environment = "mainnet"
-manifest_digest = "D8182F4EAE30591536FC6F30C9F43ECBF11B55B2D64B9FEE38FDB2A891D15203"
-deps = { paperproof_comments = "paperproof_comments", paperproof_governance = "paperproof_governance", std = "MoveStdlib", sui = "Sui" }
+manifest_digest = "8F9C8C598C4B11071C167EC135BB4D62EBA5E6EE5E8EACFF2737E9816D8B0EAF"
+deps = { paperproof_comments = "paperproof_comments", paperproof_governance = "paperproof_governance", pprf = "pprf", std = "MoveStdlib", sui = "Sui" }
 
 [pinned.mainnet.pprf]
 source = { local = '..\..\PPRF-token-contracts' }

@@ -10,7 +10,7 @@ use sui::coin;
 use sui::sui::SUI;
 use sui::test_scenario as ts;
 
-use paperproof_comments::comments::{Self, CommentsTree};
+use paperproof_comments::comments::{Self, CommentsTree, LikesBook};
 
 const ADMIN: address = @0xA;
 const USER1: address = @0xB;
@@ -37,7 +37,7 @@ fun shared_tree(
     transfer::public_transfer(permit, ADMIN);
     governance::share_fee_manager(fee_manager);
     let clock_ref = clock::create_for_testing(ts::ctx(scenario));
-    let tree = comments::new_tree(
+    let (tree, likes_book) = comments::new_tree(
         &tree_factory_cap,
         registry_id,
         governance_vault_id,
@@ -50,7 +50,7 @@ fun shared_tree(
         ts::ctx(scenario),
     );
     comments::share_tree(tree);
-    comments::share_tree_factory_cap(tree_factory_cap);
+    comments::share_likes_book(likes_book);
     clock::destroy_for_testing(clock_ref);
 }
 
@@ -321,19 +321,19 @@ fun test_like_and_unlike_paper() {
 
     ts::next_tx(&mut scenario, USER1);
     {
-        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut likes_book = ts::take_shared<LikesBook>(&scenario);
         let proof_coin = coin::mint_for_testing<PPRF>(comments::minimum_pprf_for_like(), ts::ctx(&mut scenario));
 
-        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
-        assert!(comments::like_count(&tree) == 1, 60);
-        assert!(comments::has_liked(&tree, USER1), 61);
+        comments::like_paper(&mut likes_book, &proof_coin, ts::ctx(&mut scenario));
+        assert!(comments::like_count(&likes_book) == 1, 60);
+        assert!(comments::has_liked(&likes_book, USER1), 61);
 
-        comments::unlike_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
-        assert!(comments::like_count(&tree) == 0, 62);
-        assert!(!comments::has_liked(&tree, USER1), 63);
+        comments::unlike_paper(&mut likes_book, &proof_coin, ts::ctx(&mut scenario));
+        assert!(comments::like_count(&likes_book) == 0, 62);
+        assert!(!comments::has_liked(&likes_book, USER1), 63);
 
         transfer::public_transfer(proof_coin, USER1);
-        ts::return_shared(tree);
+        ts::return_shared(likes_book);
     };
 
     ts::end(scenario);
@@ -638,6 +638,102 @@ fun test_comment_author_cannot_restore_owner_hidden_comment() {
 }
 
 #[test]
+#[expected_failure(abort_code = 26, location = paperproof_comments::comments)]
+fun test_deleted_comment_is_final_even_for_tree_owner() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x118);
+    let paper_object_id = object::id_from_address(@0x218);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER2,
+            b"PaperProof-2026-0018",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            0,
+            b"Delete me",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        comments::set_comment_status(
+            &mut tree,
+            1,
+            comments::comment_status_deleted(),
+            ts::ctx(&mut scenario),
+        );
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        comments::set_comment_status(
+            &mut tree,
+            1,
+            comments::comment_status_active(),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 25, location = paperproof_comments::comments)]
+fun test_root_comment_status_is_immutable() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x119);
+    let paper_object_id = object::id_from_address(@0x219);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0019",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let root_comment_id = comments::root_comment_id(&tree);
+        comments::set_comment_status(
+            &mut tree,
+            root_comment_id,
+            comments::comment_status_hidden(),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 17, location = paperproof_comments::comments)]
 fun test_double_like_is_rejected() {
     let mut scenario = ts::begin(ADMIN);
@@ -656,12 +752,12 @@ fun test_double_like_is_rejected() {
 
     ts::next_tx(&mut scenario, USER1);
     {
-        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut likes_book = ts::take_shared<LikesBook>(&scenario);
         let proof_coin = coin::mint_for_testing<PPRF>(comments::minimum_pprf_for_like(), ts::ctx(&mut scenario));
-        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
-        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
+        comments::like_paper(&mut likes_book, &proof_coin, ts::ctx(&mut scenario));
+        comments::like_paper(&mut likes_book, &proof_coin, ts::ctx(&mut scenario));
         transfer::public_transfer(proof_coin, USER1);
-        ts::return_shared(tree);
+        ts::return_shared(likes_book);
     };
 
     ts::end(scenario);
@@ -686,11 +782,11 @@ fun test_like_requires_at_least_one_pprf() {
 
     ts::next_tx(&mut scenario, USER1);
     {
-        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut likes_book = ts::take_shared<LikesBook>(&scenario);
         let proof_coin = coin::mint_for_testing<PPRF>(comments::minimum_pprf_for_like() - 1, ts::ctx(&mut scenario));
-        comments::like_paper(&mut tree, &proof_coin, ts::ctx(&mut scenario));
+        comments::like_paper(&mut likes_book, &proof_coin, ts::ctx(&mut scenario));
         transfer::public_transfer(proof_coin, USER1);
-        ts::return_shared(tree);
+        ts::return_shared(likes_book);
     };
 
     ts::end(scenario);

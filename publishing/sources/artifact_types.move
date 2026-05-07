@@ -4,8 +4,8 @@
 module paperproof_publishing::artifact_types;
 
 use std::string::{Self as string, String};
-
 const E_INVALID_ARTIFACT_TYPE: u64 = 5;
+const E_OBJECT_ID_TOO_SHORT: u64 = 6;
 
 const PREPRINT: u8 = 1;
 const BLOG_POST: u8 = 2;
@@ -51,38 +51,52 @@ public fun name(artifact_type: u8): String {
     }
 }
 
-public fun code(artifact_type: u8, number: u64): String {
+public fun code(artifact_type: u8, epoch: u64, series_id: &sui::object::ID): String {
     assert_supported(artifact_type);
     let mut code = string::utf8(b"PaperProof-");
     string::append(&mut code, name(artifact_type));
     string::append(&mut code, string::utf8(b"-"));
-    string::append(&mut code, u64_to_string(number));
+    string::append(&mut code, epoch6_to_string(epoch));
+    string::append(&mut code, string::utf8(b"-"));
+    string::append(&mut code, id_hex_prefix_12(series_id));
     code
 }
 
-fun u64_to_string(n: u64): String {
-    if (n == 0) {
-        return string::utf8(b"0")
-    };
-
-    let mut x = n;
-    let mut digits_reversed = vector::empty<u8>();
-
-    while (x > 0) {
-        let digit = (x % 10) as u8;
-        vector::push_back(&mut digits_reversed, 48 + digit);
-        x = x / 10;
-    };
-
-    let len = vector::length(&digits_reversed);
-    let mut i = len;
+fun epoch6_to_string(epoch: u64): String {
+    let mut n = epoch % 1000000;
+    let mut divisor = 100000;
     let mut digits = vector::empty<u8>();
 
-    while (i > 0) {
-        i = i - 1;
-        let b = *vector::borrow(&digits_reversed, i);
-        vector::push_back(&mut digits, b);
+    while (divisor > 0) {
+        let digit = (n / divisor) as u8;
+        vector::push_back(&mut digits, 48 + digit);
+        n = n % divisor;
+        divisor = divisor / 10;
     };
 
     string::utf8(digits)
+}
+
+fun id_hex_prefix_12(series_id: &sui::object::ID): String {
+    let bytes = series_id.to_bytes();
+    assert!(vector::length(&bytes) >= 6, E_OBJECT_ID_TOO_SHORT);
+
+    let mut hex = vector::empty<u8>();
+    let mut i = 0;
+    while (i < 6) {
+        let byte = *vector::borrow(&bytes, i);
+        vector::push_back(&mut hex, hex_digit(byte / 16));
+        vector::push_back(&mut hex, hex_digit(byte % 16));
+        i = i + 1;
+    };
+
+    string::utf8(hex)
+}
+
+fun hex_digit(n: u8): u8 {
+    if (n < 10) {
+        48 + n
+    } else {
+        87 + n
+    }
 }

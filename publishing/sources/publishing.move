@@ -7,10 +7,11 @@ use std::string::{Self as string, String};
 
 use paperproof_publishing::artifact_types;
 use paperproof_publishing::validation;
-use paperproof_comments::comments::{Self as comments, CommentsTree, TreeFactoryCap};
+use paperproof_comments::comments::{Self as comments, CommentsTree, LikesBook, TreeFactoryCap};
 use paperproof_governance::governance::{
     Self as governance,
     FeeManager,
+    GovernanceActionExecutorCap,
     GovernanceVault,
     OperatorPermit,
 };
@@ -67,7 +68,8 @@ public struct PaperProofRoot has key {
     governance_vault_id: ID,
     fee_manager_id: ID,
     type_registry_id: ID,
-    comments_tree_factory_cap_id: ID,
+    comments_tree_factory_cap: TreeFactoryCap,
+    governance_action_executor_cap: GovernanceActionExecutorCap,
 }
 
 public struct TypeInfo has store {
@@ -92,8 +94,6 @@ public struct TypeIndex has key {
     version: u64,
     registry_id: ID,
     artifact_type: u8,
-    next_number: u64,
-    code_to_series: Table<String, ID>,
 }
 
 public struct MetadataAttribute has copy, drop, store {
@@ -112,6 +112,7 @@ public struct ArtifactSeries has key {
     version_ids: vector<ID>,
     metadata_extensions: vector<MetadataAttribute>,
     comments_tree_id: ID,
+    likes_book_id: ID,
     status: u8,
     ui_status: u8,
     created_at_ms: u64,
@@ -211,6 +212,7 @@ public struct ArtifactPublishedEvent has copy, drop {
     content_type: String,
     version: u64,
     comments_tree_id: ID,
+    likes_book_id: ID,
     created_at_ms: u64,
 }
 
@@ -268,7 +270,8 @@ public struct PaperProofRootCreatedEvent has copy, drop {
     governance_vault_id: ID,
     fee_manager_id: ID,
     type_registry_id: ID,
-    comments_tree_factory_cap_id: ID,
+    comments_tree_factory_cap_registry_id: ID,
+    governance_action_executor_cap_registry_id: ID,
 }
 
 public struct TypeRegistryCreatedEvent has copy, drop {
@@ -318,7 +321,8 @@ fun init(ctx: &mut TxContext) {
     add_type_info(&mut type_registry, artifact_types::generic_file(), generic_file_index_id, now);
 
     let fee_manager = governance::new_fee_manager(root_id, ctx);
-    let (vault, operator_permit) = governance::new_vault(root_id, sender, sender, ctx);
+    let (vault, operator_permit, governance_action_executor_cap) =
+        governance::new_vault_with_action_executor_cap(root_id, sender, sender, ctx);
 
     let comments_tree_factory_cap = comments::new_tree_factory_cap(&vault, &fee_manager, ctx);
 
@@ -329,12 +333,13 @@ fun init(ctx: &mut TxContext) {
         governance_vault_id: object::id(&vault),
         fee_manager_id: governance::fee_manager_id(&fee_manager),
         type_registry_id: object::id(&type_registry),
-        comments_tree_factory_cap_id: comments::tree_factory_cap_id(&comments_tree_factory_cap),
+        comments_tree_factory_cap,
+        governance_action_executor_cap,
     };
     let governance_vault_id = root.governance_vault_id;
     let fee_manager_id = root.fee_manager_id;
     let type_registry_id = root.type_registry_id;
-    let comments_tree_factory_cap_id = root.comments_tree_factory_cap_id;
+    let comments_tree_factory_cap_registry_id = comments::tree_factory_cap_registry_id(&root.comments_tree_factory_cap);
 
     event::emit(PaperProofRootCreatedEvent {
         root_id,
@@ -342,7 +347,8 @@ fun init(ctx: &mut TxContext) {
         governance_vault_id,
         fee_manager_id,
         type_registry_id,
-        comments_tree_factory_cap_id,
+        comments_tree_factory_cap_registry_id,
+        governance_action_executor_cap_registry_id: root_id,
     });
     event::emit(TypeRegistryCreatedEvent { root_id, type_registry_id, created_by: sender });
     event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::preprint(), type_index_id: preprint_index_id, created_by: sender });
@@ -360,7 +366,6 @@ fun init(ctx: &mut TxContext) {
     transfer::share_object(software_release_index);
     transfer::share_object(generic_file_index);
     transfer::share_object(type_registry);
-    comments::share_tree_factory_cap(comments_tree_factory_cap);
     governance::share_fee_manager(fee_manager);
     governance::share_vault(vault);
     transfer::public_transfer(operator_permit, sender);
@@ -369,10 +374,8 @@ fun init(ctx: &mut TxContext) {
 public fun publish_preprint(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     abstract_text: String,
     authors: vector<String>,
@@ -398,13 +401,11 @@ public fun publish_preprint(
     validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
-    let (series, header, comments_tree) = publish_common(
+    let (series, header, comments_tree, likes_book) = publish_common(
         root,
         type_registry,
-        index,
         governance_vault,
         fee_manager,
-        comments_tree_factory_cap,
         artifact_types::preprint(),
         version_id,
         content_hash,
@@ -430,16 +431,15 @@ public fun publish_preprint(
     };
     transfer::share_object(series);
     comments::share_tree(comments_tree);
+    comments::share_likes_book(likes_book);
     transfer::share_object(record);
 }
 
 public fun publish_blog_post(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     summary: String,
     tags: vector<String>,
@@ -460,13 +460,11 @@ public fun publish_blog_post(
     validate_short_text(&language);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
-    let (series, header, comments_tree) = publish_common(
+    let (series, header, comments_tree, likes_book) = publish_common(
         root,
         type_registry,
-        index,
         governance_vault,
         fee_manager,
-        comments_tree_factory_cap,
         artifact_types::blog_post(),
         version_id,
         content_hash,
@@ -482,16 +480,15 @@ public fun publish_blog_post(
     let record = BlogPostVersionRecord { id: version_uid, header, title, summary, tags, language };
     transfer::share_object(series);
     comments::share_tree(comments_tree);
+    comments::share_likes_book(likes_book);
     transfer::share_object(record);
 }
 
 public fun publish_technical_report(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     abstract_text: String,
     authors: vector<String>,
@@ -518,13 +515,11 @@ public fun publish_technical_report(
     validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
-    let (series, header, comments_tree) = publish_common(
+    let (series, header, comments_tree, likes_book) = publish_common(
         root,
         type_registry,
-        index,
         governance_vault,
         fee_manager,
-        comments_tree_factory_cap,
         artifact_types::technical_report(),
         version_id,
         content_hash,
@@ -550,16 +545,15 @@ public fun publish_technical_report(
     };
     transfer::share_object(series);
     comments::share_tree(comments_tree);
+    comments::share_likes_book(likes_book);
     transfer::share_object(record);
 }
 
 public fun publish_dataset(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     description: String,
     format: String,
@@ -584,13 +578,11 @@ public fun publish_dataset(
     validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
-    let (series, header, comments_tree) = publish_common(
+    let (series, header, comments_tree, likes_book) = publish_common(
         root,
         type_registry,
-        index,
         governance_vault,
         fee_manager,
-        comments_tree_factory_cap,
         artifact_types::dataset(),
         version_id,
         content_hash,
@@ -616,16 +608,15 @@ public fun publish_dataset(
     };
     transfer::share_object(series);
     comments::share_tree(comments_tree);
+    comments::share_likes_book(likes_book);
     transfer::share_object(record);
 }
 
 public fun publish_software_release(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     project_name: String,
     version_name: String,
     source_hash: String,
@@ -652,13 +643,11 @@ public fun publish_software_release(
     validate_medium_text(&repository_url);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
-    let (series, header, comments_tree) = publish_common(
+    let (series, header, comments_tree, likes_book) = publish_common(
         root,
         type_registry,
-        index,
         governance_vault,
         fee_manager,
-        comments_tree_factory_cap,
         artifact_types::software_release(),
         version_id,
         content_hash,
@@ -684,16 +673,15 @@ public fun publish_software_release(
     };
     transfer::share_object(series);
     comments::share_tree(comments_tree);
+    comments::share_likes_book(likes_book);
     transfer::share_object(record);
 }
 
 public fun publish_generic_file(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     description: String,
     filename: String,
@@ -715,13 +703,11 @@ public fun publish_generic_file(
     validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
-    let (series, header, comments_tree) = publish_common(
+    let (series, header, comments_tree, likes_book) = publish_common(
         root,
         type_registry,
-        index,
         governance_vault,
         fee_manager,
-        comments_tree_factory_cap,
         artifact_types::generic_file(),
         version_id,
         content_hash,
@@ -745,6 +731,7 @@ public fun publish_generic_file(
     };
     transfer::share_object(series);
     comments::share_tree(comments_tree);
+    comments::share_likes_book(likes_book);
     transfer::share_object(record);
 }
 
@@ -1073,6 +1060,7 @@ public fun execute_artifact_type_enabled_proposal(
         governance_config,
         proposal,
         governance_vault,
+        &root.governance_action_executor_cap,
         object::id(root),
         voting::action_set_artifact_type_enabled(),
         ctx,
@@ -1083,6 +1071,28 @@ public fun execute_artifact_type_enabled_proposal(
     let artifact_type = artifact_type_payload as u8;
     assert!(enabled_payload == 0 || enabled_payload == 1, E_INVALID_GOVERNANCE_ACTION);
     apply_artifact_type_enabled(type_registry, artifact_type, enabled_payload == 1, tx_context::sender(ctx), clock_ref);
+}
+
+public fun execute_comments_fee_level_proposal(
+    root: &PaperProofRoot,
+    governance_vault: &GovernanceVault,
+    fee_manager: &mut FeeManager,
+    governance_config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+    ctx: &mut TxContext,
+) {
+    assert_current_root(root);
+    assert!(root.governance_vault_id == object::id(governance_vault), E_INVALID_GOVERNANCE_VAULT);
+    assert!(root.fee_manager_id == governance::fee_manager_id(fee_manager), E_INVALID_FEE_MANAGER);
+
+    voting::execute_comments_fee_level_proposal(
+        governance_config,
+        proposal,
+        governance_vault,
+        &root.governance_action_executor_cap,
+        fee_manager,
+        ctx,
+    );
 }
 
 public fun execute_artifact_fee_level_proposal(
@@ -1101,6 +1111,7 @@ public fun execute_artifact_fee_level_proposal(
         governance_config,
         proposal,
         governance_vault,
+        &root.governance_action_executor_cap,
         object::id(root),
         voting::action_set_artifact_fee_level(),
         ctx,
@@ -1129,6 +1140,7 @@ public fun execute_artifact_type_activation_proposal(
         governance_config,
         proposal,
         governance_vault,
+        &root.governance_action_executor_cap,
         object::id(root),
         voting::action_activate_artifact_type(),
         ctx,
@@ -1172,6 +1184,7 @@ public fun update_series_metadata_extensions(
 ) {
     assert_current_series(series);
     assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
+    assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
     validate_metadata_extensions(&metadata_extensions);
     series.metadata_extensions = metadata_extensions;
     series.updated_at_ms = clock::timestamp_ms(clock_ref);
@@ -1184,16 +1197,14 @@ public fun update_series_metadata_extensions(
     });
 }
 
-public fun get_series_id_by_code(index: &TypeIndex, artifact_code: String): ID {
-    *table::borrow(&index.code_to_series, artifact_code)
-}
-
 public fun root_version(root: &PaperProofRoot): u64 { root.version }
 public fun root_paused(root: &PaperProofRoot): bool { root.paused }
 public fun root_governance_vault_id(root: &PaperProofRoot): ID { root.governance_vault_id }
 public fun root_fee_manager_id(root: &PaperProofRoot): ID { root.fee_manager_id }
 public fun root_type_registry_id(root: &PaperProofRoot): ID { root.type_registry_id }
-public fun root_comments_tree_factory_cap_id(root: &PaperProofRoot): ID { root.comments_tree_factory_cap_id }
+public fun root_comments_tree_factory_cap_registry_id(root: &PaperProofRoot): ID {
+    comments::tree_factory_cap_registry_id(&root.comments_tree_factory_cap)
+}
 
 public fun artifact_type_preprint(): u8 { artifact_types::preprint() }
 public fun artifact_type_blog_post(): u8 { artifact_types::blog_post() }
@@ -1204,6 +1215,9 @@ public fun artifact_type_generic_file(): u8 { artifact_types::generic_file() }
 public fun ui_status_normal(): u8 { UI_NORMAL }
 public fun ui_status_flagged(): u8 { UI_FLAGGED }
 public fun ui_status_hidden_in_official_ui(): u8 { UI_HIDDEN_IN_OFFICIAL_UI }
+public fun series_status_active(): u8 { SERIES_STATUS_ACTIVE }
+public fun series_status_locked(): u8 { SERIES_STATUS_LOCKED }
+public fun series_status_hidden(): u8 { SERIES_STATUS_HIDDEN }
 
 public fun artifact_type_name(artifact_type: u8): String {
     artifact_types::name(artifact_type)
@@ -1217,7 +1231,6 @@ public fun type_index_object_id(type_registry: &TypeRegistry, artifact_type: u8)
     table::borrow(&type_registry.types, artifact_type).index_object_id
 }
 
-public fun index_next_number(index: &TypeIndex): u64 { index.next_number }
 public fun index_artifact_type(index: &TypeIndex): u8 { index.artifact_type }
 public fun series_artifact_type(series: &ArtifactSeries): u8 { series.artifact_type }
 public fun series_artifact_code(series: &ArtifactSeries): String { series.artifact_code }
@@ -1225,6 +1238,7 @@ public fun series_owner(series: &ArtifactSeries): address { series.owner }
 public fun series_current_version(series: &ArtifactSeries): u64 { series.current_version }
 public fun series_current_version_id(series: &ArtifactSeries): ID { series.current_version_id }
 public fun series_comments_tree_id(series: &ArtifactSeries): ID { series.comments_tree_id }
+public fun series_likes_book_id(series: &ArtifactSeries): ID { series.likes_book_id }
 public fun series_status(series: &ArtifactSeries): u8 { series.status }
 public fun series_ui_status(series: &ArtifactSeries): u8 { series.ui_status }
 public fun series_metadata_count(series: &ArtifactSeries): u64 { vector::length(&series.metadata_extensions) }
@@ -1256,10 +1270,8 @@ public fun generic_file_header(record: &GenericFileVersionRecord): &CommonArtifa
 fun publish_common(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     artifact_type: u8,
     version_id: ID,
     content_hash: String,
@@ -1271,8 +1283,8 @@ fun publish_common(
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
-): (ArtifactSeries, CommonArtifactHeader, CommentsTree) {
-    assert_publish_context(root, type_registry, index, governance_vault, fee_manager, comments_tree_factory_cap, artifact_type);
+): (ArtifactSeries, CommonArtifactHeader, CommentsTree, LikesBook) {
+    assert_publish_context(root, type_registry, governance_vault, fee_manager, artifact_type);
     validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
     validate_metadata_extensions(&series_metadata_extensions);
     validate_metadata_extensions(&version_metadata_extensions);
@@ -1280,16 +1292,12 @@ fun publish_common(
 
     let now = clock::timestamp_ms(clock_ref);
     let sender = tx_context::sender(ctx);
-    let number = index.next_number;
-    index.next_number = number + 1;
-    let artifact_code = make_artifact_code(artifact_type, number);
-
     let series_uid = object::new(ctx);
     let series_id = *series_uid.as_inner();
-    table::add(&mut index.code_to_series, artifact_code, series_id);
+    let artifact_code = make_artifact_code(artifact_type, tx_context::epoch(ctx), &series_id);
 
-    let comments_tree = comments::new_tree(
-        comments_tree_factory_cap,
+    let (comments_tree, likes_book) = comments::new_tree(
+        &root.comments_tree_factory_cap,
         object::id(root),
         root.governance_vault_id,
         root.fee_manager_id,
@@ -1301,6 +1309,7 @@ fun publish_common(
         ctx,
     );
     let comments_tree_id = comments::tree_id(&comments_tree);
+    let likes_book_id = comments::likes_book_id(&likes_book);
 
     let mut version_ids = vector::empty<ID>();
     vector::push_back(&mut version_ids, version_id);
@@ -1315,6 +1324,7 @@ fun publish_common(
         version_ids,
         metadata_extensions: series_metadata_extensions,
         comments_tree_id,
+        likes_book_id,
         status: SERIES_STATUS_ACTIVE,
         ui_status: UI_NORMAL,
         created_at_ms: now,
@@ -1347,10 +1357,11 @@ fun publish_common(
         content_type: header.content_type,
         version: 1,
         comments_tree_id,
+        likes_book_id,
         created_at_ms: now,
     });
 
-    (series, header, comments_tree)
+    (series, header, comments_tree, likes_book)
 }
 
 fun add_version_common(
@@ -1433,10 +1444,8 @@ fun add_version_common(
 fun assert_publish_context(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
-    index: &TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
-    comments_tree_factory_cap: &TreeFactoryCap,
     artifact_type: u8,
 ) {
     assert_current_root(root);
@@ -1444,17 +1453,13 @@ fun assert_publish_context(
     assert!(!root.paused, E_PAUSED);
     assert_valid_artifact_type(artifact_type);
     assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
-    assert!(index.registry_id == object::id(root), E_INVALID_INDEX);
-    assert!(index.artifact_type == artifact_type, E_INVALID_INDEX);
     let info = table::borrow(&type_registry.types, artifact_type);
     assert!(info.enabled, E_ARTIFACT_TYPE_DISABLED);
-    assert!(info.index_object_id == object::id(index), E_INVALID_INDEX);
     assert!(governance::registry_id(governance_vault) == object::id(root), E_INVALID_GOVERNANCE_VAULT);
     assert!(governance::fee_manager_registry_id(fee_manager) == object::id(root), E_INVALID_FEE_MANAGER);
     assert!(object::id(governance_vault) == root.governance_vault_id, E_INVALID_GOVERNANCE_VAULT);
     assert!(governance::fee_manager_id(fee_manager) == root.fee_manager_id, E_INVALID_FEE_MANAGER);
-    assert!(comments::tree_factory_cap_id(comments_tree_factory_cap) == root.comments_tree_factory_cap_id, E_INVALID_COMMENTS_TREE);
-    assert!(comments::tree_factory_cap_registry_id(comments_tree_factory_cap) == object::id(root), E_INVALID_COMMENTS_TREE);
+    assert!(comments::tree_factory_cap_registry_id(&root.comments_tree_factory_cap) == object::id(root), E_INVALID_COMMENTS_TREE);
 }
 
 fun assert_admin(
@@ -1502,8 +1507,6 @@ fun new_index(
         version: TYPE_INDEX_VERSION,
         registry_id,
         artifact_type,
-        next_number: 1,
-        code_to_series: table::new(ctx),
     }
 }
 
@@ -1614,11 +1617,16 @@ fun validate_metadata_attribute(attribute: &MetadataAttribute) {
     assert!(string::length(&attribute.value) < MAX_METADATA_VALUE_BYTES + 1, E_METADATA_TEXT_TOO_LONG);
 }
 
-fun make_artifact_code(artifact_type: u8, number: u64): String {
-    artifact_types::code(artifact_type, number)
+fun make_artifact_code(artifact_type: u8, epoch: u64, series_id: &ID): String {
+    artifact_types::code(artifact_type, epoch, series_id)
 }
 
 #[test_only]
 public fun init_for_testing(ctx: &mut TxContext) {
     init(ctx);
+}
+
+#[test_only]
+public fun expected_artifact_code_for_testing(artifact_type: u8, epoch: u64, series_id: ID): String {
+    artifact_types::code(artifact_type, epoch, &series_id)
 }

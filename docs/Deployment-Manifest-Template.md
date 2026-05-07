@@ -80,7 +80,8 @@ Use one filled manifest per environment and per release.
 - `PaperProofRoot` creation tx digest:
 - `TypeRegistry` object ID:
 - `FeeManager` object ID:
-- `TreeFactoryCap` object ID:
+- Comments tree factory capability custody: embedded in `PaperProofRoot`
+- Governance action executor cap custody: embedded in `PaperProofRoot`
 - `TypeIndex` object IDs by artifact type:
   - preprint:
   - blog_post:
@@ -96,6 +97,7 @@ Use one filled manifest per environment and per release.
 
 - `GovernanceConfig` object ID:
 - `GovernanceConfig` creation tx digest:
+- Proposal object mapping source: `GovernanceConfig.proposal_id_to_object`
 
 ## 6. Governance Runtime Configuration
 
@@ -172,7 +174,6 @@ The frontend and external clients should use only the canonical IDs below.
 - `TypeRegistry` object ID:
 - `FeeManager` object ID:
 - `GovernanceVault` object ID:
-- `TreeFactoryCap` object ID:
 - `GovernanceConfig` object ID:
 - Fee recipient:
 - Upgrade authority:
@@ -191,8 +192,7 @@ Mark each item after verification.
 - [ ] `GovernanceVault.registry_id` equals the official `PaperProofRoot` ID
 - [ ] `GovernanceConfig.registry_id` equals the official `PaperProofRoot` ID
 - [ ] `FeeManager.registry_id` equals the official `PaperProofRoot` ID
-- [ ] `TreeFactoryCap.registry_id` equals the official `PaperProofRoot` ID
-- [ ] `PaperProofRoot.comments_tree_factory_cap_id` equals the official `TreeFactoryCap` ID
+- [ ] root comments tree factory registry getter equals the official `PaperProofRoot` ID
 - [ ] `TypeRegistry.registry_id` equals the official `PaperProofRoot` ID
 - [ ] `publishing` frontend config points to the official package ID
 - [ ] `comments` frontend config points to the official package ID
@@ -209,7 +209,7 @@ Mark each item after verification.
 ### Publishing
 
 - Publish artifact test tx:
-- Publish artifact used official `TreeFactoryCap`:
+- Publish artifact used the root-embedded comments tree factory capability:
 - Add artifact version test tx:
 - Transfer owner test tx:
 

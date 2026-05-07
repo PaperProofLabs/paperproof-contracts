@@ -104,6 +104,12 @@ public struct GovernanceActionTicket {
     executed_by: address,
 }
 
+public struct GovernanceActionExecutorCap has key, store {
+    id: UID,
+    registry_id: ID,
+    governance_vault_id: ID,
+}
+
 public struct OperatorPermit has key, store {
     id: UID,
     registry_id: ID,
@@ -358,6 +364,34 @@ public fun direct_authority_permanently_disabled(vault: &GovernanceVault): bool 
     vault.direct_authority_permanently_disabled
 }
 
+public fun action_executor_cap_registry_id(cap: &GovernanceActionExecutorCap): ID {
+    cap.registry_id
+}
+
+public fun new_vault_with_action_executor_cap(
+    registry_id: ID,
+    governance_authority: address,
+    initial_operator: address,
+    ctx: &mut TxContext,
+): (GovernanceVault, OperatorPermit, GovernanceActionExecutorCap) {
+    let (vault, permit) = new_vault(registry_id, governance_authority, initial_operator, ctx);
+    let action_executor_cap = GovernanceActionExecutorCap {
+        id: object::new(ctx),
+        registry_id,
+        governance_vault_id: object::id(&vault),
+    };
+    (vault, permit, action_executor_cap)
+}
+
+public fun assert_action_executor_cap(
+    vault: &GovernanceVault,
+    cap: &GovernanceActionExecutorCap,
+) {
+    assert_current_vault(vault);
+    assert!(cap.registry_id == vault.registry_id, E_INVALID_REGISTRY);
+    assert!(cap.governance_vault_id == object::id(vault), E_INVALID_REGISTRY);
+}
+
 public fun direct_authority_mode_full(): u8 {
     DIRECT_AUTHORITY_MODE_FULL
 }
@@ -506,7 +540,7 @@ public fun artifact_fee_amount(
     fee_amount_for_level(artifact_fee_level(fee_manager, artifact_type))
 }
 
-public fun apply_comments_fee_level_from_ticket(
+public(package) fun apply_comments_fee_level_from_ticket(
     vault: &GovernanceVault,
     fee_manager: &mut FeeManager,
     ticket: GovernanceActionTicket,

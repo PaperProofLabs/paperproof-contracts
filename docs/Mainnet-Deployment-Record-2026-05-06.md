@@ -25,7 +25,7 @@ PaperProof contract system.
 - `PaperProofRoot`:
 - `TypeRegistry`:
 - `FeeManager`:
-- `TreeFactoryCap`:
+- Comments tree factory capability: embedded in `PaperProofRoot`
 - `TypeIndex` for `preprint`:
 - `TypeIndex` for `blog_post`:
 - `TypeIndex` for `technical_report`:
@@ -65,18 +65,22 @@ PaperProof contract system.
 - [ ] `GovernanceVault.registry_id` equals `PaperProofRoot`
 - [ ] `GovernanceConfig.registry_id` equals `PaperProofRoot`
 - [ ] `FeeManager.registry_id` equals `PaperProofRoot`
-- [ ] `TreeFactoryCap.registry_id` equals `PaperProofRoot`
-- [ ] `PaperProofRoot.comments_tree_factory_cap_id` equals `TreeFactoryCap`
+- [ ] root comments tree factory registry getter equals `PaperProofRoot`
 - [ ] `TypeRegistry.registry_id` equals `PaperProofRoot`
 - [ ] every `TypeInfo.index_object_id` matches the expected `TypeIndex`
+- [ ] governance executor cap is embedded in `PaperProofRoot`
+- [ ] proposal execution paths verify `GovernanceConfig.proposal_id_to_object`
+- [ ] published series records both official `comments_tree_id` and `likes_book_id`
 
 ## Smoke Test Transactions
 
 - Publish artifact:
-- Verify official `TreeFactoryCap` used:
+- Verify root-embedded comments tree factory capability used:
+- Verify official `CommentsTree` and `LikesBook` bound:
 - Add artifact version:
 - Add on-chain comment:
 - Add blob-backed comment:
+- Like and unlike through official `LikesBook`:
 - Create proposal:
 - Vote yes:
 - Finalize proposal:

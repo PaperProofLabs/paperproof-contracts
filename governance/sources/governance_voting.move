@@ -7,7 +7,7 @@
 module paperproof_governance::governance_voting;
 
 use std::string::String;
-use paperproof_governance::governance::{Self as governance, GovernanceVault};
+use paperproof_governance::governance::{Self as governance, GovernanceActionExecutorCap, GovernanceVault};
 use openzeppelin_access::two_step_transfer::{
     PendingOwnershipTransfer,
     TwoStepTransferWrapper,
@@ -49,6 +49,7 @@ const E_PROPOSAL_OUTCOME_NOT_YET_DETERMINABLE: u64 = 27;
 const E_ACTION_NOT_ENABLED: u64 = 28;
 const E_INVALID_ACTION_ENABLE_TARGET: u64 = 29;
 const E_NOT_GOVERNANCE_CONFIG_INITIALIZER: u64 = 30;
+const E_INVALID_PROPOSAL_CONFIG_BINDING: u64 = 31;
 
 const PROPOSAL_TYPE_EXECUTABLE: u8 = 1;
 const PROPOSAL_TYPE_SIGNAL: u8 = 2;
@@ -437,6 +438,7 @@ public fun finalize_proposal(
 ) {
     assert_current_config(config);
     assert_current_proposal(proposal);
+    assert_proposal_belongs_to_config(config, proposal);
     assert!(proposal.status == PROPOSAL_STATUS_ACTIVE, E_PROPOSAL_ALREADY_FINALIZED);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(tx_context::epoch(ctx) >= proposal.end_epoch, E_VOTING_NOT_ENDED);
@@ -450,6 +452,7 @@ public fun resolve_proposal_early(
 ) {
     assert_current_config(config);
     assert_current_proposal(proposal);
+    assert_proposal_belongs_to_config(config, proposal);
     assert!(proposal.status == PROPOSAL_STATUS_ACTIVE, E_PROPOSAL_ALREADY_FINALIZED);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(outcome_determinable(config, proposal), E_PROPOSAL_OUTCOME_NOT_YET_DETERMINABLE);
@@ -466,6 +469,7 @@ public fun execute_proposal(
     assert_current_config(config);
     assert_current_proposal(proposal);
     governance::assert_current_vault(vault);
+    assert_proposal_belongs_to_config(config, proposal);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(governance::registry_id(vault) == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(governance::governance_config_id(vault) == object::id(config), E_INVALID_VAULT_REGISTRY);
@@ -549,6 +553,7 @@ public fun consume_executable_proposal_action(
     config: &mut GovernanceConfig,
     proposal: &mut Proposal,
     vault: &GovernanceVault,
+    action_executor_cap: &GovernanceActionExecutorCap,
     registry_id: ID,
     expected_action_type: u8,
     ctx: &mut TxContext,
@@ -556,6 +561,9 @@ public fun consume_executable_proposal_action(
     assert_current_config(config);
     assert_current_proposal(proposal);
     governance::assert_current_vault(vault);
+    governance::assert_action_executor_cap(vault, action_executor_cap);
+    assert_proposal_belongs_to_config(config, proposal);
+    assert!(governance::action_executor_cap_registry_id(action_executor_cap) == registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(config.registry_id == registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(governance::registry_id(vault) == registry_id, E_INVALID_VAULT_REGISTRY);
@@ -592,6 +600,26 @@ public fun consume_executable_proposal_action(
     )
 }
 
+public fun execute_comments_fee_level_proposal(
+    config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+    vault: &GovernanceVault,
+    action_executor_cap: &GovernanceActionExecutorCap,
+    fee_manager: &mut governance::FeeManager,
+    ctx: &mut TxContext,
+) {
+    let ticket = consume_executable_proposal_action(
+        config,
+        proposal,
+        vault,
+        action_executor_cap,
+        governance::registry_id(vault),
+        ACTION_SET_COMMENTS_FEE_LEVEL,
+        ctx,
+    );
+    governance::apply_comments_fee_level_from_ticket(vault, fee_manager, ticket);
+}
+
 public fun execute_cancel_operator_transfer_proposal(
     config: &mut GovernanceConfig,
     proposal: &mut Proposal,
@@ -603,6 +631,7 @@ public fun execute_cancel_operator_transfer_proposal(
     assert_current_config(config);
     assert_current_proposal(proposal);
     governance::assert_current_vault(vault);
+    assert_proposal_belongs_to_config(config, proposal);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(governance::registry_id(vault) == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(governance::governance_config_id(vault) == object::id(config), E_INVALID_VAULT_REGISTRY);
@@ -982,6 +1011,18 @@ fun assert_current_config(config: &GovernanceConfig) {
 
 fun assert_current_proposal(proposal: &Proposal) {
     assert!(proposal.version == PROPOSAL_VERSION, E_UNSUPPORTED_PROPOSAL_VERSION);
+}
+
+fun assert_proposal_belongs_to_config(
+    config: &GovernanceConfig,
+    proposal: &Proposal,
+) {
+    assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(table::contains(&config.proposal_id_to_object, proposal.proposal_id), E_INVALID_PROPOSAL_CONFIG_BINDING);
+    assert!(
+        *table::borrow(&config.proposal_id_to_object, proposal.proposal_id) == object::id(proposal),
+        E_INVALID_PROPOSAL_CONFIG_BINDING,
+    );
 }
 
 fun migrate_config_version(config: &mut GovernanceConfig) {

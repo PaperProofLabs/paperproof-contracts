@@ -11,7 +11,7 @@ The main model is:
 
 - `PaperProofRoot`: canonical protocol root for publishing.
 - `TypeRegistry`: artifact-type registry and activation state.
-- `TypeIndex`: per-type code index.
+- `TypeIndex`: per-type deployment marker kept for registry discovery.
 - `ArtifactSeries`: stable identity for one work.
 - `MetadataAttribute`: optional key/value extension metadata.
 - strong typed `VersionRecord` objects: immutable snapshots for each published
@@ -39,20 +39,25 @@ getters and does not define duplicate type constants.
 Public artifact codes use:
 
 ```text
-PaperProof-{type}-{n}
+PaperProof-{type}-{epoch6}-{series_id_hex_12}
 ```
+
+`epoch6` is `tx_context::epoch(ctx) % 1000000`, left-padded to six decimal
+digits. `series_id_hex_12` is the first 12 lowercase hexadecimal characters of
+the newly created `ArtifactSeries` object ID.
 
 Examples:
 
-- `PaperProof-preprint-1`
-- `PaperProof-dataset-1`
-- `PaperProof-generic_file-1`
+- `PaperProof-preprint-000742-a3f91c8b2d4e`
+- `PaperProof-dataset-000742-7b20aa91f044`
+- `PaperProof-generic_file-000743-d4c3b2a19088`
 
-The code mapping is stored in the relevant `TypeIndex`:
-
-```text
-artifact_code -> ArtifactSeries ID
-```
+Artifact codes are not globally sequential and are not allocated through a
+shared per-type counter. This is intentional: first-publication transactions do
+not write `TypeIndex`, so different users can publish the same artifact type
+without contending on a per-type shared object. Chain consumers should treat the
+`ArtifactSeries` object ID as the canonical on-chain identity and rebuild
+`artifact_code -> ArtifactSeries ID` from `ArtifactPublishedEvent`.
 
 The first version intentionally does not add on-chain author, tag, keyword, or
 license indexes. Those belong in events and off-chain indexers for now.
@@ -64,12 +69,13 @@ license indexes. Those belong in events and off-chain indexers for now.
 - `governance_vault_id`
 - `fee_manager_id`
 - `type_registry_id`
-- `comments_tree_factory_cap_id`
+- embedded comments tree factory capability
 - protocol version and pause flag
 
 It does not store one hardcoded field per artifact type.
 
-`TypeRegistry` owns the type-to-index mapping:
+`TypeRegistry` owns artifact type activation state and records the type-index
+marker object:
 
 - `artifact_type`
 - `index_object_id`
@@ -78,7 +84,9 @@ It does not store one hardcoded field per artifact type.
 - `min_protocol_version`
 - timestamps
 
-This keeps future type expansion from changing the root object layout.
+This keeps future type expansion from changing the root object layout. Publish
+entrypoints read `TypeRegistry` to validate type enablement, but they do not
+write the per-type `TypeIndex`.
 
 ## Version Records
 
@@ -138,7 +146,7 @@ public struct MetadataAttribute has copy, drop, store {
 `ArtifactSeries.metadata_extensions` stores series-level metadata. It is
 optional and may remain empty for most artifacts. First-publication entrypoints
 accept `series_metadata_extensions`, and the series owner can later replace the
-series metadata through:
+series metadata while the series status is `ACTIVE` through:
 
 ```move
 publishing::update_series_metadata_extensions
@@ -146,6 +154,10 @@ publishing::update_series_metadata_extensions
 
 Every successful series metadata update emits
 `ArtifactSeriesMetadataUpdatedEvent`.
+
+Locked or hidden series reject metadata-extension updates. This keeps metadata
+changes aligned with the visible publication state instead of allowing owners to
+continue changing indexer-facing fields after a series has been restricted.
 
 `CommonArtifactHeader.metadata_extensions` stores version-level metadata.
 First-publication entrypoints and add-version entrypoints accept
@@ -155,32 +167,53 @@ version metadata update function is exposed.
 
 ## Comments Binding
 
-Publishing automatically creates one official `CommentsTree` when an artifact
-series is first published.
+Publishing automatically creates one official `CommentsTree` and one official
+`LikesBook` when an artifact series is first published.
 
-The tree must be created through the official shared
-`comments::TreeFactoryCap` recorded on `PaperProofRoot`. First-publication
-entrypoints therefore require the caller to supply:
+The tree must be created through the official `comments::TreeFactoryCap`
+embedded inside `PaperProofRoot`. First-publication entrypoints therefore
+require the caller to supply:
 
 - the official `GovernanceVault`
 - the official `FeeManager`
-- the official `TreeFactoryCap`
 
 The publishing package verifies that these objects match the IDs recorded on
-`PaperProofRoot` before collecting fees or creating the tree. This prevents a
-frontend or external caller from publishing through a forged comments tree
-factory, foreign fee manager, or foreign vault.
+`PaperProofRoot` before collecting fees or creating the tree. The tree factory
+capability itself is not a shared object and is not supplied by users. This
+prevents a frontend or external caller from creating official-looking comments
+trees through a shared factory object, forged fee manager, or foreign vault.
 
-The tree is bound to the series, not to a single version:
+The comments tree is bound to the series, not to a single version:
 
 - `target_series_id`
 - `target_artifact_type`
 - `target_key`
 - `owner`
 
-`ArtifactSeries.comments_tree_id` is the official per-series binding. External
-packages cannot call `comments::new_tree` without a valid `TreeFactoryCap`, and
-the publishing protocol recognizes only the tree recorded on the series.
+The likes book is a separate shared object bound to the same series and comments
+tree:
+
+- `comments_tree_id`
+- `target_series_id`
+- `target_artifact_type`
+
+This lets comment writes and like/unlike writes use different shared objects.
+It removes the avoidable contention between discussion activity and lightweight
+PPRF-holding proof activity on a popular series.
+
+## Pause Boundary
+
+Protocol pause is intentionally scoped to publishing entrypoints that create a
+new series or append a new version. Comment and like flows do not read
+`PaperProofRoot` or `TypeRegistry` on every call, so normal discussion and
+PPRF-holding proof activity can keep their shared-object concurrency. If a
+deployment needs to stop comments for a specific series, use the comments-tree
+status controls for that tree.
+
+`ArtifactSeries.comments_tree_id` and `ArtifactSeries.likes_book_id` are the
+official per-series bindings. The official publishing path creates those
+objects from the root-embedded factory capability, and the publishing protocol
+recognizes only the tree and likes book recorded on the series.
 
 Owner transfer must be called with the official comments tree. The publishing
 entrypoint verifies that the supplied tree ID equals
@@ -233,10 +266,11 @@ The current executable governance actions for artifact publishing are:
 1. enable the artifact type in `TypeRegistry`
 2. set the artifact type fee level in `FeeManager`
 
-`governance_voting` does not import `publishing`. Instead, it consumes a passed
-proposal and returns a one-time `GovernanceActionTicket`. The publishing package
-then applies publishing-specific state changes using that ticket. This keeps the
-dependency direction as:
+`governance_voting` does not import `publishing`. Instead, publishing
+entrypoints borrow the official `GovernanceActionExecutorCap` embedded in
+`PaperProofRoot`, consume the passed proposal into a one-time
+`GovernanceActionTicket`, and apply the publishing-specific state change in the
+same transaction. This keeps the dependency direction as:
 
 ```text
 publishing -> governance

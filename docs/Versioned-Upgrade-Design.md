@@ -44,7 +44,7 @@ objects:
 4. `publishing::ArtifactSeries`
 5. typed publishing `VersionRecord` objects
 6. `comments::CommentsTree`
-7. `comments::TreeFactoryCap`
+7. `comments::LikesBook`
 8. `governance::GovernanceVault`
 9. `governance::FeeManager`
 10. `governance_voting::GovernanceConfig`
@@ -124,9 +124,9 @@ The current implementation uses the following version constants:
 
 At present, all newly created objects start at version `1`.
 
-`TreeFactoryCap` is also a long-lived shared capability object. It is recorded
-by `PaperProofRoot` and constrains official comments tree creation, but it does
-not currently require a separate version getter or migration hook.
+`TreeFactoryCap` is an embedded capability value inside `PaperProofRoot`, not a
+shared object. It constrains official comments tree creation without adding a
+separate shared-object version or migration surface.
 
 ## Current Version Guards
 
@@ -188,11 +188,14 @@ This is used to guard:
 
 - `add_onchain_comment`
 - `add_blob_comment`
-- `like_paper`
-- `unlike_paper`
 - `set_tree_status`
 - `set_comment_status`
 - `transfer_tree_owner`
+
+`comments::LikesBook` has its own version guard for:
+
+- `like_paper`
+- `unlike_paper`
 
 ## Current And Future Migration Hooks
 

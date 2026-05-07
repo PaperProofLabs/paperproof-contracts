@@ -22,12 +22,13 @@ objects:
 - six initial `TypeIndex` objects
 - `FeeManager`
 - `GovernanceVault`
-- `TreeFactoryCap`
 - initial `OperatorPermit`
 
-`PaperProofRoot` stores only root dependency IDs. `TypeRegistry` stores the
-artifact-type-to-index mapping. The root also records the official
-`comments::TreeFactoryCap` ID used to create per-series comments trees.
+`PaperProofRoot` stores root dependency IDs and the embedded
+`GovernanceActionExecutorCap` used for official executor-cap governance actions.
+It also embeds the official `comments::TreeFactoryCap` used to create
+per-series comments trees and likes books. `TypeRegistry` stores artifact type
+activation state and the type-index marker for each built-in type.
 
 ## Built-In Types
 
@@ -40,7 +41,9 @@ The initial built-in artifact types are:
 - `software_release`
 - `generic_file`
 
-Each type has one `TypeIndex`.
+Each type has one `TypeIndex` marker. First-publication code generation no
+longer writes `TypeIndex`; artifact-code lookup is rebuilt from
+`ArtifactPublishedEvent`.
 
 ## Deployment Recording
 
@@ -51,7 +54,6 @@ Record:
 - `TypeRegistry` object ID
 - `FeeManager` object ID
 - `GovernanceVault` object ID
-- `TreeFactoryCap` object ID
 - `GovernanceConfig` object ID, once created
 - every initial `TypeIndex` object ID
 - initial `OperatorPermit` recipient
@@ -66,7 +68,8 @@ After publishing initialization:
 2. verify `GovernanceConfig.registry_id == PaperProofRoot ID`
 3. verify `GovernanceVault.registry_id == PaperProofRoot ID`
 4. verify `FeeManager.registry_id == PaperProofRoot ID`
-5. verify `TreeFactoryCap.registry_id == PaperProofRoot ID`
+5. verify the root-embedded comments tree factory registry getter returns
+   `PaperProofRoot ID`
 6. record proposer threshold, proposal duration, and active proposal state
 
 ## Artifact Type Governance
@@ -83,8 +86,10 @@ Use executable proposals for:
 because it enables the type and sets the fee level in the same approved action.
 
 Any account may execute a passed proposal while it is inside the execution
-window. The execution path consumes the proposal into a `GovernanceActionTicket`
-and then applies the publishing-specific state change.
+window through the official executor entrypoint. That path borrows the
+executor cap embedded in `PaperProofRoot`, consumes the proposal into a
+`GovernanceActionTicket`, and then applies the publishing-specific state
+change.
 
 ## Smoke Tests
 
@@ -92,16 +97,20 @@ Minimum deployment smoke test:
 
 1. publish one artifact
 2. verify an `ArtifactSeries` was created
-3. verify the relevant `TypeIndex` maps code to series ID
-4. verify a `CommentsTree` was created and bound to the series
-5. verify publication used the official `TreeFactoryCap`
-6. add a version and verify the comments tree ID remains unchanged
-7. add an on-chain comment
-8. create a governance proposal
-9. cast a yes vote
-10. finalize the proposal
-11. execute the proposal
-12. claim locked voting funds
+3. verify the artifact code follows
+   `PaperProof-{type}-{epoch6}-{series_id_hex_12}`
+4. verify the indexer can rebuild `artifact_code -> series_id` from
+   `ArtifactPublishedEvent`
+5. verify a `CommentsTree` and `LikesBook` were created and bound to the series
+6. verify publication does not require a shared `TreeFactoryCap` object
+7. add a version and verify the comments tree ID and likes book ID remain unchanged
+8. add an on-chain comment
+9. like and unlike through the official `LikesBook`
+10. create a governance proposal
+11. cast a yes vote
+12. finalize the proposal
+13. execute the proposal
+14. claim locked voting funds
 
 ## Upgrade Flow
 
@@ -144,12 +153,16 @@ Maintain these invariants:
 - one official `TypeRegistry`
 - one official `FeeManager`
 - one official `GovernanceVault`
-- one official `TreeFactoryCap`
 - every built-in type maps to the expected `TypeIndex`
 - `GovernanceVault.registry_id == PaperProofRoot ID`
 - `GovernanceConfig.registry_id == PaperProofRoot ID`
 - `FeeManager.registry_id == PaperProofRoot ID`
-- `TreeFactoryCap.registry_id == PaperProofRoot ID`
-- `PaperProofRoot.comments_tree_factory_cap_id == TreeFactoryCap ID`
+- `PaperProofRoot` embeds the official comments tree factory capability
+- the root comments tree factory registry getter returns `PaperProofRoot ID`
 - each `ArtifactSeries` binds exactly one official `CommentsTree`
-- later versions reuse the same comments tree
+- each `ArtifactSeries` binds exactly one official `LikesBook`
+- `CommentsTree.likes_book_id == ArtifactSeries.likes_book_id`
+- `LikesBook.comments_tree_id == ArtifactSeries.comments_tree_id`
+- later versions reuse the same comments tree and likes book
+- proposal state transitions must verify the proposal belongs to the supplied
+  `GovernanceConfig` through `proposal_id_to_object`

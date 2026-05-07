@@ -39,6 +39,8 @@ const E_BLOB_ID_TOO_LONG: u64 = 21;
 const E_BLOB_DIGEST_TOO_LONG: u64 = 22;
 const E_CONTENT_PREVIEW_TOO_LONG: u64 = 23;
 const E_INVALID_TREE_FACTORY_CAP: u64 = 24;
+const E_ROOT_COMMENT_IMMUTABLE: u64 = 25;
+const E_DELETED_COMMENT_FINAL: u64 = 26;
 
 const MIN_PPRF_FOR_LIKE: u64 = 1_000_000_000; // 1 PPRF
 const COMMENTS_TREE_VERSION: u64 = 1;
@@ -64,13 +66,22 @@ public struct CommentsTree has key {
     max_onchain_comment_bytes: u64,
     max_comment_depth: u16,
     created_at_ms: u64,
-    like_count: u64,
-    likes: Table<address, bool>,
+    likes_book_id: ID,
     nodes: Table<u64, CommentNode>,
 }
 
-public struct TreeFactoryCap has key {
+public struct LikesBook has key {
     id: UID,
+    version: u64,
+    registry_id: ID,
+    comments_tree_id: ID,
+    target_series_id: ID,
+    target_artifact_type: u8,
+    like_count: u64,
+    likes: Table<address, bool>,
+}
+
+public struct TreeFactoryCap has drop, store {
     registry_id: ID,
     governance_vault_id: ID,
     fee_manager_id: ID,
@@ -104,6 +115,7 @@ public struct TreeCreatedEvent has copy, drop {
     target_series_id: ID,
     target_artifact_type: u8,
     created_at_ms: u64,
+    likes_book_id: ID,
 }
 
 public struct CommentAddedEvent has copy, drop {
@@ -150,12 +162,16 @@ public struct CommentsTreeMigratedEvent has copy, drop {
 
 public struct PaperLikedEvent has copy, drop {
     tree_id: ID,
+    likes_book_id: ID,
+    target_series_id: ID,
     liker: address,
     like_count: u64,
 }
 
 public struct PaperUnlikedEvent has copy, drop {
     tree_id: ID,
+    likes_book_id: ID,
+    target_series_id: ID,
     liker: address,
     like_count: u64,
 }
@@ -194,15 +210,10 @@ public fun new_tree_factory_cap(
     );
 
     TreeFactoryCap {
-        id: object::new(ctx),
         registry_id: governance::registry_id(governance_vault),
         governance_vault_id: object::id(governance_vault),
         fee_manager_id: governance::fee_manager_id(fee_manager),
     }
-}
-
-public fun share_tree_factory_cap(cap: TreeFactoryCap) {
-    transfer::share_object(cap);
 }
 
 public fun new_tree(
@@ -216,12 +227,17 @@ public fun new_tree(
     target_artifact_type: u8,
     clock_ref: &Clock,
     ctx: &mut TxContext,
-): CommentsTree {
+): (CommentsTree, LikesBook) {
     assert_tree_factory_cap(tree_factory_cap, registry_id, governance_vault_id, fee_manager_id);
     assert!(!string::is_empty(&target_key), E_EMPTY_TARGET_KEY);
 
+    let tree_uid = object::new(ctx);
+    let tree_id = *tree_uid.as_inner();
+    let likes_book_uid = object::new(ctx);
+    let likes_book_id = *likes_book_uid.as_inner();
+
     let mut tree = CommentsTree {
-        id: object::new(ctx),
+        id: tree_uid,
         version: COMMENTS_TREE_VERSION,
         creator: tx_context::sender(ctx),
         owner,
@@ -238,9 +254,19 @@ public fun new_tree(
         max_onchain_comment_bytes: DEFAULT_MAX_ONCHAIN_COMMENT_BYTES,
         max_comment_depth: DEFAULT_MAX_COMMENT_DEPTH,
         created_at_ms: clock::timestamp_ms(clock_ref),
+        likes_book_id,
+        nodes: table::new(ctx),
+    };
+
+    let likes_book = LikesBook {
+        id: likes_book_uid,
+        version: COMMENTS_TREE_VERSION,
+        registry_id,
+        comments_tree_id: tree_id,
+        target_series_id,
+        target_artifact_type,
         like_count: 0,
         likes: table::new(ctx),
-        nodes: table::new(ctx),
     };
 
     let root = CommentNode {
@@ -262,7 +288,7 @@ public fun new_tree(
     table::add(&mut tree.nodes, ROOT_COMMENT_ID, root);
 
     event::emit(TreeCreatedEvent {
-        tree_id: *tree.id.as_inner(),
+        tree_id,
         creator: tree.creator,
         owner: tree.owner,
         registry_id: tree.registry_id,
@@ -272,13 +298,18 @@ public fun new_tree(
         target_series_id: tree.target_series_id,
         target_artifact_type: tree.target_artifact_type,
         created_at_ms: tree.created_at_ms,
+        likes_book_id,
     });
 
-    tree
+    (tree, likes_book)
 }
 
 public fun share_tree(tree: CommentsTree) {
     transfer::share_object(tree);
+}
+
+public fun share_likes_book(book: LikesBook) {
+    transfer::share_object(book);
 }
 
 public fun add_onchain_comment(
@@ -426,42 +457,46 @@ public fun add_blob_comment(
 }
 
 public fun like_paper(
-    tree: &mut CommentsTree,
+    book: &mut LikesBook,
     pprf_proof: &Coin<PPRF>,
     ctx: &TxContext,
 ) {
-    assert_current_tree(tree);
+    assert_current_likes_book(book);
     let liker = tx_context::sender(ctx);
     assert!(coin::value(pprf_proof) >= MIN_PPRF_FOR_LIKE, E_INSUFFICIENT_PPRF_LIKE_BALANCE);
-    assert!(!table::contains(&tree.likes, liker), E_ALREADY_LIKED);
+    assert!(!table::contains(&book.likes, liker), E_ALREADY_LIKED);
 
-    table::add(&mut tree.likes, liker, true);
-    tree.like_count = tree.like_count + 1;
+    table::add(&mut book.likes, liker, true);
+    book.like_count = book.like_count + 1;
 
     event::emit(PaperLikedEvent {
-        tree_id: *tree.id.as_inner(),
+        tree_id: book.comments_tree_id,
+        likes_book_id: object::id(book),
+        target_series_id: book.target_series_id,
         liker,
-        like_count: tree.like_count,
+        like_count: book.like_count,
     });
 }
 
 public fun unlike_paper(
-    tree: &mut CommentsTree,
+    book: &mut LikesBook,
     pprf_proof: &Coin<PPRF>,
     ctx: &TxContext,
 ) {
-    assert_current_tree(tree);
+    assert_current_likes_book(book);
     let liker = tx_context::sender(ctx);
     assert!(coin::value(pprf_proof) >= MIN_PPRF_FOR_LIKE, E_INSUFFICIENT_PPRF_LIKE_BALANCE);
-    assert!(table::contains(&tree.likes, liker), E_NOT_LIKED);
+    assert!(table::contains(&book.likes, liker), E_NOT_LIKED);
 
-    let _ = table::remove(&mut tree.likes, liker);
-    tree.like_count = tree.like_count - 1;
+    let _ = table::remove(&mut book.likes, liker);
+    book.like_count = book.like_count - 1;
 
     event::emit(PaperUnlikedEvent {
-        tree_id: *tree.id.as_inner(),
+        tree_id: book.comments_tree_id,
+        likes_book_id: object::id(book),
+        target_series_id: book.target_series_id,
         liker,
-        like_count: tree.like_count,
+        like_count: book.like_count,
     });
 }
 
@@ -495,8 +530,10 @@ public fun set_comment_status(
     assert_current_tree(tree);
     assert_valid_comment_status(new_status);
     assert!(table::contains(&tree.nodes, comment_id), E_COMMENT_NOT_FOUND);
+    assert!(comment_id != ROOT_COMMENT_ID, E_ROOT_COMMENT_IMMUTABLE);
 
     let node = table::borrow_mut(&mut tree.nodes, comment_id);
+    assert!(node.status != COMMENT_STATUS_DELETED, E_DELETED_COMMENT_FINAL);
     let sender = tx_context::sender(ctx);
     if (sender != tree.owner) {
         assert!(sender == node.author, E_NOT_COMMENT_OWNER_OR_TREE_OWNER);
@@ -570,10 +607,6 @@ public fun fee_manager_id(tree: &CommentsTree): ID {
     tree.fee_manager_id
 }
 
-public fun tree_factory_cap_id(cap: &TreeFactoryCap): ID {
-    object::id(cap)
-}
-
 public fun tree_factory_cap_registry_id(cap: &TreeFactoryCap): ID {
     cap.registry_id
 }
@@ -588,6 +621,10 @@ public fun target_series_id(tree: &CommentsTree): ID {
 
 public fun target_artifact_type(tree: &CommentsTree): u8 {
     tree.target_artifact_type
+}
+
+public fun tree_likes_book_id(tree: &CommentsTree): ID {
+    tree.likes_book_id
 }
 
 public fun root_comment_id(tree: &CommentsTree): u64 {
@@ -614,12 +651,36 @@ public fun max_comment_depth(tree: &CommentsTree): u16 {
     tree.max_comment_depth
 }
 
-public fun like_count(tree: &CommentsTree): u64 {
-    tree.like_count
+public fun likes_book_id(book: &LikesBook): ID {
+    object::id(book)
 }
 
-public fun has_liked(tree: &CommentsTree, liker: address): bool {
-    table::contains(&tree.likes, liker)
+public fun likes_book_version(book: &LikesBook): u64 {
+    book.version
+}
+
+public fun likes_book_registry_id(book: &LikesBook): ID {
+    book.registry_id
+}
+
+public fun likes_book_comments_tree_id(book: &LikesBook): ID {
+    book.comments_tree_id
+}
+
+public fun likes_book_target_series_id(book: &LikesBook): ID {
+    book.target_series_id
+}
+
+public fun likes_book_target_artifact_type(book: &LikesBook): u8 {
+    book.target_artifact_type
+}
+
+public fun like_count(book: &LikesBook): u64 {
+    book.like_count
+}
+
+public fun has_liked(book: &LikesBook, liker: address): bool {
+    table::contains(&book.likes, liker)
 }
 
 public fun has_comment(tree: &CommentsTree, comment_id: u64): bool {
@@ -769,6 +830,10 @@ fun assert_valid_comment_status(status: u8) {
 
 fun assert_current_tree(tree: &CommentsTree) {
     assert!(tree.version == COMMENTS_TREE_VERSION, E_UNSUPPORTED_TREE_VERSION);
+}
+
+fun assert_current_likes_book(book: &LikesBook) {
+    assert!(book.version == COMMENTS_TREE_VERSION, E_UNSUPPORTED_TREE_VERSION);
 }
 
 fun assert_tree_factory_cap(

@@ -26,10 +26,10 @@ Current documents include:
   type-specific fees, and governance activation flow
 - `PPRF-governance-voting.md`: implemented `PPRF` governance voting structure,
   lock-based voting rules, and executable governance actions including the
-  official upgrade-authority and artifact proposal-ticket paths
+  official upgrade-authority and executor-cap artifact paths
 - `Governance-Modes.md`: detailed explanation of directly executable governance
   and signal governance in the current `PaperProof` system, including
-  publishing-specific governance action tickets
+  publishing-specific executor-cap governance actions
 - `Deployment-and-Upgrade-Runbook.md`: deployment order, root object
   initialization, artifact type governance, managed `UpgradeCap` custody, and
   recommended protocol upgrade workflow for the three-package contract system

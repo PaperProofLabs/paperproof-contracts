@@ -116,11 +116,12 @@ Governance action availability is also controlled by `PPRF` voting. This means
 new action code can exist in a package before that action becomes available for
 live proposals.
 
-Publishing-specific artifact actions are executed through proposal tickets:
-the vote happens in `governance_voting`, then `publishing` consumes the passed
-proposal and applies the artifact registry or fee-manager change. This keeps
-artifact type activation governed by `PPRF` holders without introducing a
-package dependency cycle.
+Publishing-specific artifact actions are executed through official executor-cap
+entrypoints: the vote happens in `governance_voting`, then `publishing` borrows
+the executor cap embedded in `PaperProofRoot`, consumes the passed proposal, and
+applies the artifact registry or fee-manager change. This keeps artifact type
+activation governed by `PPRF` holders without introducing a package dependency
+cycle.
 
 ## 2.4 Protocol Legitimacy for Signal Governance
 
@@ -180,8 +181,9 @@ This gives `PPRF` an especially important native role:
 
 ## 2.7 Access-Gated Social Utility Through Balance Proof
 
-The comments layer currently requires a minimal `PPRF` balance proof for paper
-likes and unlikes:
+The comments package currently requires a minimal `PPRF` balance proof for
+paper likes and unlikes. Likes are stored in a dedicated `LikesBook`, separate
+from the comments tree:
 
 - a user must provide a `Coin<PPRF>` object with at least `1 PPRF`
 
