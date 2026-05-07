@@ -39,8 +39,15 @@ Current documents include:
 - `Mainnet-Deployment-Record-2026-05-06.md`: mainnet deployment record template
   for the current contract system, including package IDs, canonical root
   objects, governance configuration, and frontend/runtime parameters
+- `Mainnet-Post-Deployment-Funds-And-Authority-Migration.md`: operational
+  checklist for moving funds, role authorities, operator custody, fee
+  recipient, and package `UpgradeCap` custody after the 2026-05-07 mainnet
+  deployment
 - `Mainnet-GoLive-Checklist.md`: concise launch-readiness checklist for final
   mainnet validation before opening the official frontend to the public
+- `Second-Round-Prelaunch-Audit.md`: second-round prelaunch security review,
+  remaining chain-off filtering risks, official object binding rules, and
+  community participant notes
 - `Observability-and-Read-APIs.md`: current events/getters across
   `publishing`, `comments`, and `governance`, including artifact events,
   governance-control, upgrade/migration observability, and indexing guidance
