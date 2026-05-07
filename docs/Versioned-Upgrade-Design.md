@@ -5,7 +5,7 @@
 This document explains the versioned-upgrade preparation that has been built
 into the current `PaperProof` contract system.
 
-The goal is **not** to make the protocol hot-upgrade itself through ordinary
+The goal is **not** to make package code hot-upgrade itself through ordinary
 governance parameters. Instead, the goal is to embed explicit upgrade handles
 so that future package upgrades can:
 
@@ -13,24 +13,41 @@ so that future package upgrades can:
 - migrate long-lived shared objects in a controlled way;
 - keep core struct layouts stable; and
 - support future security patches and protocol evolution without forcing an
-  immediate v1-to-v2 state reset.
+  immediate state reset.
 
 This design assumes the current architectural preference remains unchanged:
 
 - core struct layouts should stay as stable as possible;
-- most future changes should happen at the protocol behavior layer;
+- most future changes should happen at the protocol behavior or typed-extension
+  layer;
 - future upgrades should be explicit, governed, and operationally controlled.
+
+For upgrades that add user-facing protocol capabilities, the preferred pattern
+is:
+
+```text
+UpgradeCap makes code available.
+Governance enables protocol capabilities.
+```
+
+Examples include new artifact types, new fee dimensions, new publishing
+entrypoints, and new governance actions.
 
 ## Scope
 
-The current versioned-upgrade preparation covers six long-lived shared objects:
+The current versioned-upgrade preparation covers the main long-lived shared
+objects:
 
-1. `publishing::PaperRegistry`
-2. `publishing::PaperRecord`
-3. `comments::CommentsTree`
-4. `governance::GovernanceVault`
-5. `governance_voting::GovernanceConfig`
-6. `governance_voting::Proposal`
+1. `publishing::PaperProofRoot`
+2. `publishing::TypeRegistry`
+3. `publishing::TypeIndex`
+4. `publishing::ArtifactSeries`
+5. typed publishing `VersionRecord` objects
+6. `comments::CommentsTree`
+7. `governance::GovernanceVault`
+8. `governance::FeeManager`
+9. `governance_voting::GovernanceConfig`
+10. `governance_voting::Proposal`
 
 These are the main state objects that define the long-lived protocol surface.
 
@@ -48,6 +65,7 @@ That means future upgrades should prefer:
 - new logic;
 - stronger guards;
 - new governance actions;
+- new typed version records;
 - new helper modules; and
 - new integration modules
 
@@ -96,8 +114,11 @@ The current implementation uses the following version constants:
 - `governance::GOVERNANCE_VAULT_VERSION = 1`
 - `governance_voting::GOVERNANCE_CONFIG_VERSION = 1`
 - `governance_voting::PROPOSAL_VERSION = 1`
-- `publishing::PUBLISHING_REGISTRY_VERSION = 1`
-- `publishing::PUBLISHING_RECORD_VERSION = 1`
+- `publishing::PAPERPROOF_ROOT_VERSION = 1`
+- `publishing::TYPE_REGISTRY_VERSION = 1`
+- `publishing::TYPE_INDEX_VERSION = 1`
+- `publishing::ARTIFACT_SERIES_VERSION = 1`
+- typed publishing record versions are currently `1`
 - `comments::COMMENTS_TREE_VERSION = 1`
 
 At present, all newly created objects start at version `1`.
@@ -139,20 +160,18 @@ These are used to guard:
 
 The publishing layer now provides:
 
+- `assert_current_root`
 - `assert_current_registry`
-- `assert_current_record`
+- `assert_current_series`
 
 These are used to guard:
 
-- `reserve_code`
-- `finalize_paper`
-- `add_version`
-- `transfer_paper_owner`
-- `record_storage_extension`
-- `extend_walrus_storage_and_record`
+- `publish_xxx`
+- `add_xxx_version`
+- `transfer_artifact_owner`
 - `set_paused`
-- `update_limits`
-- `set_ui_status`
+- artifact type proposal execution
+- artifact status changes
 
 ### Comments Layer
 
@@ -170,9 +189,11 @@ This is used to guard:
 - `set_comment_status`
 - `transfer_tree_owner`
 
-## Current Migration Hooks
+## Current And Future Migration Hooks
 
-The following migration hooks now exist.
+The governance and comments packages already expose migration hooks. Publishing
+artifact object migrations should be added when a future package version
+requires a concrete state transition for those object classes.
 
 ### Governance
 
@@ -185,8 +206,10 @@ The following migration hooks now exist.
 
 ### Publishing
 
-- `publishing::migrate_registry`
-- `publishing::migrate_record`
+- publishing migration hooks should be added for root, registry, indexes,
+  series, and typed records when a future package version actually needs a
+  state migration. The current artifact refactor starts these object families at
+  version `1`.
 
 ### Comments
 
@@ -196,7 +219,7 @@ At the current stage, these hooks are intentionally minimal. They currently:
 
 - verify the relevant authority path;
 - verify registry alignment where relevant;
-- verify that the old version is not ahead of the package-supported version;
+- verify that the object version is not ahead of the package-supported version;
 - update the object's version to the current version when needed.
 
 They are designed to become the canonical place for future migration logic.
@@ -298,8 +321,7 @@ After the new package is live, call the appropriate migration hooks:
 - `migrate_vault`
 - `migrate_config`
 - `migrate_proposal`
-- `migrate_registry`
-- `migrate_record`
+- future publishing migration hooks as required by the upgraded object classes
 - `migrate_tree`
 
 depending on which object classes need to move to the new version.
@@ -310,7 +332,7 @@ At this stage, the package can:
 - rewrite fields if a compatible migration path exists;
 - repair invariants;
 - populate new derived state;
-- normalize legacy state to new assumptions.
+- normalize carried-forward state to current assumptions.
 
 ### Step 4. Operate Only on Current Objects
 
@@ -320,8 +342,8 @@ Once migration is complete, the new package should operate on:
 
 through the existing version guards.
 
-If an old object was not migrated, entrypoint guards should continue to reject
-it until it is migrated.
+If an object requires migration, entrypoint guards should continue to reject it
+until the migration is complete.
 
 ### Step 5. Update Frontend and Operational Routing
 
@@ -357,7 +379,8 @@ The current test suite now includes dedicated checks for the upgrade hooks:
 
 - `governance_tests::test_vault_defaults_and_fee_setters`
 - `governance_voting_tests::test_migrate_config_and_proposal_hooks`
-- `publishing_tests::test_registry_and_record_migration_hooks`
+- publishing tests covering current artifact root/registry/index/series
+  invariants
 - `comments_tests::test_tree_migration_hook`
 
 These tests currently verify that:

@@ -8,11 +8,16 @@ module paperproof_governance::governance_voting;
 
 use std::string::String;
 use paperproof_governance::governance::{Self as governance, GovernanceVault};
+use openzeppelin_access::two_step_transfer::{
+    PendingOwnershipTransfer,
+    TwoStepTransferWrapper,
+};
 use pprf::pprf::{Self as pprf, PPRF};
 use sui::balance::{Self as balance, Balance};
 use sui::coin::{Self as coin, Coin};
 use sui::event;
 use sui::table::{Self as table, Table};
+use sui::transfer::Receiving;
 
 const E_ZERO_TOTAL_SUPPLY: u64 = 1;
 const E_PROPOSAL_CREATION_PAUSED: u64 = 2;
@@ -41,11 +46,12 @@ const E_UNSUPPORTED_PROPOSAL_VERSION: u64 = 24;
 const E_INVALID_PROPOSAL_DURATION_EPOCHS: u64 = 25;
 const E_PROPOSAL_EXECUTION_NOT_EXPIRED: u64 = 26;
 const E_PROPOSAL_OUTCOME_NOT_YET_DETERMINABLE: u64 = 27;
+const E_ACTION_NOT_ENABLED: u64 = 28;
+const E_INVALID_ACTION_ENABLE_TARGET: u64 = 29;
 
 const PROPOSAL_TYPE_EXECUTABLE: u8 = 1;
 const PROPOSAL_TYPE_SIGNAL: u8 = 2;
 
-const ACTION_SET_PUBLISHING_FEE_LEVEL: u8 = 1;
 const ACTION_SET_COMMENTS_FEE_LEVEL: u8 = 2;
 const ACTION_SET_FEE_RECIPIENT: u8 = 3;
 const ACTION_NOMINATE_OPERATOR: u8 = 4;
@@ -53,6 +59,12 @@ const ACTION_SET_PROPOSAL_CREATION_PAUSED: u8 = 5;
 const ACTION_SET_PROPOSER_THRESHOLD: u8 = 6;
 const ACTION_SET_UPGRADE_AUTHORITY: u8 = 7;
 const ACTION_SET_PROPOSAL_DURATION_EPOCHS: u8 = 8;
+const ACTION_SET_ARTIFACT_TYPE_ENABLED: u8 = 9;
+const ACTION_SET_ARTIFACT_FEE_LEVEL: u8 = 10;
+const ACTION_ACTIVATE_ARTIFACT_TYPE: u8 = 11;
+const ACTION_SET_GOVERNANCE_ACTION_ENABLED: u8 = 12;
+const ACTION_SET_DIRECT_AUTHORITY_MODE: u8 = 13;
+const ACTION_CANCEL_OPERATOR_TRANSFER: u8 = 14;
 
 const ACTION_SIGNAL_REPLACE_OPERATOR: u8 = 101;
 const ACTION_SIGNAL_FEATURE_DIRECTION: u8 = 102;
@@ -90,6 +102,7 @@ public struct GovernanceConfig has key {
     proposal_creation_paused: bool,
     active_proposal_id: option::Option<u64>,
     proposal_id_to_object: Table<u64, ID>,
+    enabled_actions: Table<u8, bool>,
 }
 
 public struct VoteRecord has store, drop {
@@ -125,12 +138,14 @@ public struct Proposal has key {
 
 public struct GovernanceConfigCreatedEvent has copy, drop {
     registry_id: ID,
+    governance_config_id: ID,
     pprf_total_supply: u64,
     proposer_threshold: u64,
     proposal_duration_epochs: u64,
 }
 
 public struct ProposalCreatedEvent has copy, drop {
+    registry_id: ID,
     proposal_id: u64,
     proposer: address,
     proposal_type: u8,
@@ -140,6 +155,7 @@ public struct ProposalCreatedEvent has copy, drop {
 }
 
 public struct VoteCastEvent has copy, drop {
+    registry_id: ID,
     proposal_id: u64,
     voter: address,
     side: u8,
@@ -147,6 +163,7 @@ public struct VoteCastEvent has copy, drop {
 }
 
 public struct ProposalFinalizedEvent has copy, drop {
+    registry_id: ID,
     proposal_id: u64,
     yes_votes: u64,
     no_votes: u64,
@@ -154,16 +171,20 @@ public struct ProposalFinalizedEvent has copy, drop {
 }
 
 public struct ProposalExecutedEvent has copy, drop {
+    registry_id: ID,
     proposal_id: u64,
     action_type: u8,
+    executed_by: address,
 }
 
 public struct ProposalExpiredEvent has copy, drop {
+    registry_id: ID,
     proposal_id: u64,
     expired_at_epoch: u64,
 }
 
 public struct VoteClaimedEvent has copy, drop {
+    registry_id: ID,
     proposal_id: u64,
     voter: address,
     side: u8,
@@ -186,31 +207,46 @@ public struct ProposalMigratedEvent has copy, drop {
 public struct ProposalCreationPausedChangedEvent has copy, drop {
     registry_id: ID,
     changed_by: address,
+    old_paused: bool,
     paused: bool,
 }
 
 public struct ProposerThresholdChangedEvent has copy, drop {
     registry_id: ID,
     changed_by: address,
+    old_threshold: u64,
     new_threshold: u64,
 }
 
 public struct ProposalDurationChangedEvent has copy, drop {
     registry_id: ID,
     changed_by: address,
+    old_duration_epochs: u64,
     new_duration_epochs: u64,
 }
 
+public struct GovernanceActionStatusChangedEvent has copy, drop {
+    registry_id: ID,
+    changed_by: address,
+    action_type: u8,
+    old_enabled: bool,
+    enabled: bool,
+}
+
 public fun new_governance_config(
-    vault: &GovernanceVault,
+    vault: &mut GovernanceVault,
     ctx: &mut TxContext,
 ): GovernanceConfig {
     governance::assert_current_vault(vault);
     let pprf_total_supply = pprf::total_supply_base_units();
     assert!(pprf_total_supply > 0, E_ZERO_TOTAL_SUPPLY);
 
+    let enabled_actions = default_enabled_actions(ctx);
+    let config_uid = object::new(ctx);
+    let governance_config_id = *config_uid.as_inner();
+    governance::bind_governance_config(vault, governance_config_id, ctx);
     let config = GovernanceConfig {
-        id: object::new(ctx),
+        id: config_uid,
         version: GOVERNANCE_CONFIG_VERSION,
         registry_id: governance::registry_id(vault),
         pprf_total_supply,
@@ -220,10 +256,12 @@ public fun new_governance_config(
         proposal_creation_paused: false,
         active_proposal_id: option::none(),
         proposal_id_to_object: table::new(ctx),
+        enabled_actions,
     };
 
     event::emit(GovernanceConfigCreatedEvent {
         registry_id: config.registry_id,
+        governance_config_id,
         pprf_total_supply,
         proposer_threshold: DEFAULT_PROPOSER_THRESHOLD,
         proposal_duration_epochs: DEFAULT_PROPOSAL_DURATION_EPOCHS,
@@ -243,6 +281,7 @@ public fun migrate_config(
 ) {
     governance::assert_current_vault(vault);
     assert!(config.registry_id == governance::registry_id(vault), E_INVALID_VAULT_REGISTRY);
+    assert!(governance::governance_config_id(vault) == object::id(config), E_INVALID_VAULT_REGISTRY);
     governance::assert_upgrade_authority(vault, tx_context::sender(ctx));
     migrate_config_version(config);
     event::emit(GovernanceConfigMigratedEvent {
@@ -287,10 +326,14 @@ public fun create_proposal(
     assert!(!config.proposal_creation_paused, E_PROPOSAL_CREATION_PAUSED);
     assert!(option::is_none(&config.active_proposal_id), E_ACTIVE_PROPOSAL_EXISTS);
     assert_valid_proposal_action_pair(proposal_type, action_type);
-
-    if (proposal_type == PROPOSAL_TYPE_EXECUTABLE && action_type == ACTION_SET_PROPOSER_THRESHOLD) {
-        assert_valid_proposer_threshold(payload_u64_1);
-    };
+    assert_action_enabled(config, action_type);
+    assert_valid_proposal_payload(
+        proposal_type,
+        action_type,
+        payload_u64_1,
+        payload_u64_2,
+        payload_address,
+    );
 
     let proposer = tx_context::sender(ctx);
     let proposer_power = coin::value(&proposer_stake);
@@ -343,6 +386,7 @@ public fun create_proposal(
     option::fill(&mut config.active_proposal_id, proposal_id);
 
     event::emit(ProposalCreatedEvent {
+        registry_id: config.registry_id,
         proposal_id,
         proposer,
         proposal_type,
@@ -351,6 +395,7 @@ public fun create_proposal(
         proposer_stake: proposer_power,
     });
     event::emit(VoteCastEvent {
+        registry_id: config.registry_id,
         proposal_id,
         voter: proposer,
         side: VOTE_SIDE_YES,
@@ -417,6 +462,7 @@ public fun execute_proposal(
     governance::assert_current_vault(vault);
     assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
     assert!(governance::registry_id(vault) == config.registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(governance::governance_config_id(vault) == object::id(config), E_INVALID_VAULT_REGISTRY);
     assert!(proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE, E_PROPOSAL_NOT_EXECUTABLE);
     assert!(proposal.status == PROPOSAL_STATUS_PASSED, E_PROPOSAL_NOT_PASSED);
     assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
@@ -427,11 +473,7 @@ public fun execute_proposal(
         return
     };
 
-    if (proposal.action_type == ACTION_SET_PUBLISHING_FEE_LEVEL) {
-        governance::apply_publishing_fee_level(vault, proposal.payload_u64_1 as u8, tx_context::sender(ctx));
-    } else if (proposal.action_type == ACTION_SET_COMMENTS_FEE_LEVEL) {
-        governance::apply_comments_fee_level(vault, proposal.payload_u64_1 as u8, tx_context::sender(ctx));
-    } else if (proposal.action_type == ACTION_SET_FEE_RECIPIENT) {
+    if (proposal.action_type == ACTION_SET_FEE_RECIPIENT) {
         governance::apply_fee_recipient(vault, proposal.payload_address, tx_context::sender(ctx));
     } else if (proposal.action_type == ACTION_NOMINATE_OPERATOR) {
         governance::nominate_operator_from_vote(vault, proposal.payload_address, ctx);
@@ -440,30 +482,48 @@ public fun execute_proposal(
             proposal.payload_u64_1 == 0 || proposal.payload_u64_1 == 1,
             E_INVALID_BOOLEAN_PAYLOAD,
         );
+        let old_paused = config.proposal_creation_paused;
         config.proposal_creation_paused = proposal.payload_u64_1 == 1;
         event::emit(ProposalCreationPausedChangedEvent {
             registry_id: config.registry_id,
             changed_by: tx_context::sender(ctx),
+            old_paused,
             paused: config.proposal_creation_paused,
         });
     } else if (proposal.action_type == ACTION_SET_PROPOSER_THRESHOLD) {
         assert_valid_proposer_threshold(proposal.payload_u64_1);
+        let old_threshold = config.proposer_threshold;
         config.proposer_threshold = proposal.payload_u64_1;
         event::emit(ProposerThresholdChangedEvent {
             registry_id: config.registry_id,
             changed_by: tx_context::sender(ctx),
+            old_threshold,
             new_threshold: config.proposer_threshold,
         });
     } else if (proposal.action_type == ACTION_SET_UPGRADE_AUTHORITY) {
         governance::apply_upgrade_authority(vault, proposal.payload_address, tx_context::sender(ctx));
     } else if (proposal.action_type == ACTION_SET_PROPOSAL_DURATION_EPOCHS) {
         assert_valid_proposal_duration_epochs(proposal.payload_u64_1);
+        let old_duration_epochs = config.proposal_duration_epochs;
         config.proposal_duration_epochs = proposal.payload_u64_1;
         event::emit(ProposalDurationChangedEvent {
             registry_id: config.registry_id,
             changed_by: tx_context::sender(ctx),
+            old_duration_epochs,
             new_duration_epochs: config.proposal_duration_epochs,
         });
+    } else if (proposal.action_type == ACTION_SET_GOVERNANCE_ACTION_ENABLED) {
+        let target_action = proposal.payload_u64_1 as u8;
+        assert_valid_action_enable_target(target_action);
+        assert!(
+            proposal.payload_u64_2 == 0 || proposal.payload_u64_2 == 1,
+            E_INVALID_BOOLEAN_PAYLOAD,
+        );
+        apply_action_enabled(config, target_action, proposal.payload_u64_2 == 1, tx_context::sender(ctx));
+    } else if (proposal.action_type == ACTION_SET_DIRECT_AUTHORITY_MODE) {
+        governance::apply_direct_authority_mode_from_vote(vault, proposal.payload_u64_1 as u8, tx_context::sender(ctx));
+    } else if (proposal.action_type == ACTION_CANCEL_OPERATOR_TRANSFER) {
+        abort E_INVALID_ACTION_TYPE
     } else {
         abort E_INVALID_ACTION_TYPE
     };
@@ -472,8 +532,91 @@ public fun execute_proposal(
     proposal.status = PROPOSAL_STATUS_EXECUTED;
 
     event::emit(ProposalExecutedEvent {
+        registry_id: proposal.registry_id,
         proposal_id: proposal.proposal_id,
         action_type: proposal.action_type,
+        executed_by: tx_context::sender(ctx),
+    });
+}
+
+public fun consume_executable_proposal_action(
+    config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+    vault: &GovernanceVault,
+    registry_id: ID,
+    expected_action_type: u8,
+    ctx: &mut TxContext,
+): governance::GovernanceActionTicket {
+    assert_current_config(config);
+    assert_current_proposal(proposal);
+    governance::assert_current_vault(vault);
+    assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(config.registry_id == registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(governance::registry_id(vault) == registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(governance::governance_config_id(vault) == object::id(config), E_INVALID_VAULT_REGISTRY);
+    assert!(proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE, E_PROPOSAL_NOT_EXECUTABLE);
+    assert!(proposal.status == PROPOSAL_STATUS_PASSED, E_PROPOSAL_NOT_PASSED);
+    assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
+    assert!(proposal.action_type == expected_action_type, E_INVALID_ACTION_TYPE);
+    assert!(
+        expected_action_type == ACTION_SET_COMMENTS_FEE_LEVEL ||
+        expected_action_type == ACTION_SET_ARTIFACT_TYPE_ENABLED ||
+        expected_action_type == ACTION_SET_ARTIFACT_FEE_LEVEL ||
+        expected_action_type == ACTION_ACTIVATE_ARTIFACT_TYPE,
+        E_INVALID_ACTION_TYPE,
+    );
+    assert!(tx_context::epoch(ctx) <= execution_expiry_epoch(proposal), E_PROPOSAL_EXECUTION_NOT_EXPIRED);
+
+    proposal.executed = true;
+    proposal.status = PROPOSAL_STATUS_EXECUTED;
+
+    event::emit(ProposalExecutedEvent {
+        registry_id: proposal.registry_id,
+        proposal_id: proposal.proposal_id,
+        action_type: proposal.action_type,
+        executed_by: tx_context::sender(ctx),
+    });
+
+    governance::new_action_ticket(
+        registry_id,
+        proposal.action_type,
+        proposal.payload_u64_1,
+        proposal.payload_u64_2,
+        tx_context::sender(ctx),
+    )
+}
+
+public fun execute_cancel_operator_transfer_proposal(
+    config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+    vault: &mut GovernanceVault,
+    request: PendingOwnershipTransfer<governance::OperatorPermit>,
+    wrapper_ticket: Receiving<TwoStepTransferWrapper<governance::OperatorPermit>>,
+    ctx: &mut TxContext,
+) {
+    assert_current_config(config);
+    assert_current_proposal(proposal);
+    governance::assert_current_vault(vault);
+    assert!(proposal.registry_id == config.registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(governance::registry_id(vault) == config.registry_id, E_INVALID_VAULT_REGISTRY);
+    assert!(governance::governance_config_id(vault) == object::id(config), E_INVALID_VAULT_REGISTRY);
+    assert!(proposal.proposal_type == PROPOSAL_TYPE_EXECUTABLE, E_PROPOSAL_NOT_EXECUTABLE);
+    assert!(proposal.status == PROPOSAL_STATUS_PASSED, E_PROPOSAL_NOT_PASSED);
+    assert!(!proposal.executed, E_PROPOSAL_ALREADY_EXECUTED);
+    assert!(proposal.action_type == ACTION_CANCEL_OPERATOR_TRANSFER, E_INVALID_ACTION_TYPE);
+
+    let current_epoch = tx_context::epoch(ctx);
+    assert!(current_epoch <= execution_expiry_epoch(proposal), E_PROPOSAL_EXECUTION_NOT_EXPIRED);
+
+    governance::cancel_operator_transfer_from_vote(vault, request, wrapper_ticket, ctx);
+    proposal.executed = true;
+    proposal.status = PROPOSAL_STATUS_EXECUTED;
+
+    event::emit(ProposalExecutedEvent {
+        registry_id: proposal.registry_id,
+        proposal_id: proposal.proposal_id,
+        action_type: proposal.action_type,
+        executed_by: tx_context::sender(ctx),
     });
 }
 
@@ -511,6 +654,7 @@ public fun claim_locked_tokens(
     };
 
     event::emit(VoteClaimedEvent {
+        registry_id: proposal.registry_id,
         proposal_id: proposal.proposal_id,
         voter,
         side,
@@ -546,6 +690,11 @@ public fun configured_proposal_duration_epochs(config: &GovernanceConfig): u64 {
 
 public fun proposal_creation_paused(config: &GovernanceConfig): bool {
     config.proposal_creation_paused
+}
+
+public fun action_enabled(config: &GovernanceConfig, action_type: u8): bool {
+    table::contains(&config.enabled_actions, action_type) &&
+    *table::borrow(&config.enabled_actions, action_type)
 }
 
 public fun next_proposal_id(config: &GovernanceConfig): u64 {
@@ -684,10 +833,6 @@ public fun proposal_type_signal(): u8 {
     PROPOSAL_TYPE_SIGNAL
 }
 
-public fun action_set_publishing_fee_level(): u8 {
-    ACTION_SET_PUBLISHING_FEE_LEVEL
-}
-
 public fun action_set_comments_fee_level(): u8 {
     ACTION_SET_COMMENTS_FEE_LEVEL
 }
@@ -714,6 +859,30 @@ public fun action_set_upgrade_authority(): u8 {
 
 public fun action_set_proposal_duration_epochs(): u8 {
     ACTION_SET_PROPOSAL_DURATION_EPOCHS
+}
+
+public fun action_set_artifact_type_enabled(): u8 {
+    ACTION_SET_ARTIFACT_TYPE_ENABLED
+}
+
+public fun action_set_artifact_fee_level(): u8 {
+    ACTION_SET_ARTIFACT_FEE_LEVEL
+}
+
+public fun action_activate_artifact_type(): u8 {
+    ACTION_ACTIVATE_ARTIFACT_TYPE
+}
+
+public fun action_set_governance_action_enabled(): u8 {
+    ACTION_SET_GOVERNANCE_ACTION_ENABLED
+}
+
+public fun action_set_direct_authority_mode(): u8 {
+    ACTION_SET_DIRECT_AUTHORITY_MODE
+}
+
+public fun action_cancel_operator_transfer(): u8 {
+    ACTION_CANCEL_OPERATOR_TRANSFER
 }
 
 public fun action_signal_replace_operator(): u8 {
@@ -784,6 +953,7 @@ fun cast_vote(
     );
 
     event::emit(VoteCastEvent {
+        registry_id: proposal.registry_id,
         proposal_id: proposal.proposal_id,
         voter,
         side,
@@ -822,6 +992,53 @@ fun migrate_proposal_version(proposal: &mut Proposal) {
     };
 }
 
+fun default_enabled_actions(ctx: &mut TxContext): Table<u8, bool> {
+    let mut actions = table::new(ctx);
+    table::add(&mut actions, ACTION_SET_COMMENTS_FEE_LEVEL, true);
+    table::add(&mut actions, ACTION_SET_FEE_RECIPIENT, true);
+    table::add(&mut actions, ACTION_NOMINATE_OPERATOR, true);
+    table::add(&mut actions, ACTION_SET_PROPOSAL_CREATION_PAUSED, true);
+    table::add(&mut actions, ACTION_SET_PROPOSER_THRESHOLD, true);
+    table::add(&mut actions, ACTION_SET_UPGRADE_AUTHORITY, true);
+    table::add(&mut actions, ACTION_SET_PROPOSAL_DURATION_EPOCHS, true);
+    table::add(&mut actions, ACTION_SET_ARTIFACT_TYPE_ENABLED, true);
+    table::add(&mut actions, ACTION_SET_ARTIFACT_FEE_LEVEL, true);
+    table::add(&mut actions, ACTION_ACTIVATE_ARTIFACT_TYPE, true);
+    table::add(&mut actions, ACTION_SET_GOVERNANCE_ACTION_ENABLED, true);
+    table::add(&mut actions, ACTION_SET_DIRECT_AUTHORITY_MODE, true);
+    table::add(&mut actions, ACTION_CANCEL_OPERATOR_TRANSFER, true);
+    table::add(&mut actions, ACTION_SIGNAL_REPLACE_OPERATOR, true);
+    table::add(&mut actions, ACTION_SIGNAL_FEATURE_DIRECTION, true);
+    table::add(&mut actions, ACTION_SIGNAL_POLICY_POSITION, true);
+    actions
+}
+
+fun assert_action_enabled(config: &GovernanceConfig, action_type: u8) {
+    assert!(action_enabled(config, action_type), E_ACTION_NOT_ENABLED);
+}
+
+fun apply_action_enabled(
+    config: &mut GovernanceConfig,
+    action_type: u8,
+    enabled: bool,
+    changed_by: address,
+) {
+    assert_valid_action_enable_target(action_type);
+    let old_enabled = action_enabled(config, action_type);
+    if (table::contains(&config.enabled_actions, action_type)) {
+        *table::borrow_mut(&mut config.enabled_actions, action_type) = enabled;
+    } else {
+        table::add(&mut config.enabled_actions, action_type, enabled);
+    };
+    event::emit(GovernanceActionStatusChangedEvent {
+        registry_id: config.registry_id,
+        changed_by,
+        action_type,
+        old_enabled,
+        enabled,
+    });
+}
+
 fun finalize_active_proposal(
     config: &mut GovernanceConfig,
     proposal: &mut Proposal,
@@ -837,6 +1054,7 @@ fun finalize_active_proposal(
     clear_active_proposal(config, proposal.proposal_id);
 
     event::emit(ProposalFinalizedEvent {
+        registry_id: proposal.registry_id,
         proposal_id: proposal.proposal_id,
         yes_votes: proposal.yes_votes,
         no_votes: proposal.no_votes,
@@ -848,6 +1066,7 @@ fun expire_proposal_internal(proposal: &mut Proposal, current_epoch: u64) {
     proposal.status = PROPOSAL_STATUS_EXPIRED;
     proposal.executed = false;
     event::emit(ProposalExpiredEvent {
+        registry_id: proposal.registry_id,
         proposal_id: proposal.proposal_id,
         expired_at_epoch: current_epoch,
     });
@@ -905,14 +1124,19 @@ fun assert_valid_proposal_action_pair(
 ) {
     if (proposal_type == PROPOSAL_TYPE_EXECUTABLE) {
         assert!(
-            action_type == ACTION_SET_PUBLISHING_FEE_LEVEL ||
             action_type == ACTION_SET_COMMENTS_FEE_LEVEL ||
             action_type == ACTION_SET_FEE_RECIPIENT ||
             action_type == ACTION_NOMINATE_OPERATOR ||
             action_type == ACTION_SET_PROPOSAL_CREATION_PAUSED ||
             action_type == ACTION_SET_PROPOSER_THRESHOLD ||
             action_type == ACTION_SET_UPGRADE_AUTHORITY ||
-            action_type == ACTION_SET_PROPOSAL_DURATION_EPOCHS,
+            action_type == ACTION_SET_PROPOSAL_DURATION_EPOCHS ||
+            action_type == ACTION_SET_ARTIFACT_TYPE_ENABLED ||
+            action_type == ACTION_SET_ARTIFACT_FEE_LEVEL ||
+            action_type == ACTION_ACTIVATE_ARTIFACT_TYPE ||
+            action_type == ACTION_SET_GOVERNANCE_ACTION_ENABLED ||
+            action_type == ACTION_SET_DIRECT_AUTHORITY_MODE ||
+            action_type == ACTION_CANCEL_OPERATOR_TRANSFER,
             E_EXECUTABLE_ACTION_NOT_ALLOWED,
         );
     } else if (proposal_type == PROPOSAL_TYPE_SIGNAL) {
@@ -924,5 +1148,75 @@ fun assert_valid_proposal_action_pair(
         );
     } else {
         abort E_INVALID_PROPOSAL_TYPE
+    };
+}
+
+fun assert_known_action(action_type: u8) {
+    assert!(
+        action_type == ACTION_SET_COMMENTS_FEE_LEVEL ||
+        action_type == ACTION_SET_FEE_RECIPIENT ||
+        action_type == ACTION_NOMINATE_OPERATOR ||
+        action_type == ACTION_SET_PROPOSAL_CREATION_PAUSED ||
+        action_type == ACTION_SET_PROPOSER_THRESHOLD ||
+        action_type == ACTION_SET_UPGRADE_AUTHORITY ||
+        action_type == ACTION_SET_PROPOSAL_DURATION_EPOCHS ||
+        action_type == ACTION_SET_ARTIFACT_TYPE_ENABLED ||
+        action_type == ACTION_SET_ARTIFACT_FEE_LEVEL ||
+        action_type == ACTION_ACTIVATE_ARTIFACT_TYPE ||
+        action_type == ACTION_SET_GOVERNANCE_ACTION_ENABLED ||
+        action_type == ACTION_SET_DIRECT_AUTHORITY_MODE ||
+        action_type == ACTION_CANCEL_OPERATOR_TRANSFER ||
+        action_type == ACTION_SIGNAL_REPLACE_OPERATOR ||
+        action_type == ACTION_SIGNAL_FEATURE_DIRECTION ||
+        action_type == ACTION_SIGNAL_POLICY_POSITION,
+        E_INVALID_ACTION_TYPE,
+    );
+}
+
+fun assert_valid_action_enable_target(action_type: u8) {
+    assert_known_action(action_type);
+    assert!(action_type != ACTION_SET_GOVERNANCE_ACTION_ENABLED, E_INVALID_ACTION_ENABLE_TARGET);
+}
+
+fun assert_valid_proposal_payload(
+    proposal_type: u8,
+    action_type: u8,
+    payload_u64_1: u64,
+    payload_u64_2: u64,
+    payload_address: address,
+) {
+    if (proposal_type == PROPOSAL_TYPE_SIGNAL) {
+        return
+    };
+
+    if (action_type == ACTION_SET_COMMENTS_FEE_LEVEL) {
+        governance::assert_valid_fee_level(payload_u64_1 as u8);
+    } else if (action_type == ACTION_SET_FEE_RECIPIENT) {
+        assert!(payload_address != @0x0, E_INVALID_ACTION_TYPE);
+    } else if (action_type == ACTION_NOMINATE_OPERATOR) {
+        assert!(payload_address != @0x0, E_INVALID_ACTION_TYPE);
+    } else if (action_type == ACTION_SET_PROPOSAL_CREATION_PAUSED) {
+        assert!(payload_u64_1 == 0 || payload_u64_1 == 1, E_INVALID_BOOLEAN_PAYLOAD);
+    } else if (action_type == ACTION_SET_PROPOSER_THRESHOLD) {
+        assert_valid_proposer_threshold(payload_u64_1);
+    } else if (action_type == ACTION_SET_UPGRADE_AUTHORITY) {
+        assert!(payload_address != @0x0, E_INVALID_ACTION_TYPE);
+    } else if (action_type == ACTION_SET_PROPOSAL_DURATION_EPOCHS) {
+        assert_valid_proposal_duration_epochs(payload_u64_1);
+    } else if (action_type == ACTION_SET_ARTIFACT_TYPE_ENABLED) {
+        assert!(payload_u64_2 == 0 || payload_u64_2 == 1, E_INVALID_BOOLEAN_PAYLOAD);
+    } else if (action_type == ACTION_SET_ARTIFACT_FEE_LEVEL) {
+        governance::assert_valid_fee_level(payload_u64_2 as u8);
+    } else if (action_type == ACTION_ACTIVATE_ARTIFACT_TYPE) {
+        governance::assert_valid_fee_level(payload_u64_2 as u8);
+    } else if (action_type == ACTION_SET_GOVERNANCE_ACTION_ENABLED) {
+        assert_valid_action_enable_target(payload_u64_1 as u8);
+        assert!(payload_u64_2 == 0 || payload_u64_2 == 1, E_INVALID_BOOLEAN_PAYLOAD);
+    } else if (action_type == ACTION_SET_DIRECT_AUTHORITY_MODE) {
+        governance::assert_valid_direct_authority_mode(payload_u64_1 as u8);
+    } else if (action_type == ACTION_CANCEL_OPERATOR_TRANSFER) {
+        // No payload required. Object arguments are checked at execution.
+    } else {
+        abort E_INVALID_ACTION_TYPE
     };
 }

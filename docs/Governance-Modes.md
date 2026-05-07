@@ -1,501 +1,226 @@
 # Governance Modes in PaperProof
 
-## Overview
+PaperProof governance supports two modes:
 
-The current `PaperProof` governance system supports two distinct governance
-modes:
+1. executable governance
+2. signal governance
 
-1. **Directly executable governance**
-2. **Signal / directional governance**
+Both modes use the same proposal and voting objects. They differ in whether a
+passed proposal can mutate protocol state.
 
-These two modes share the same proposal-and-voting infrastructure, but they
-serve different purposes and produce different kinds of outcomes.
+## Shared Rules
 
-The distinction is intentional:
+All proposals use lock-based `PPRF` voting:
 
-- some governance decisions should directly change protocol state
-- some governance decisions should primarily express community will and guide
-  off-chain execution, research, development, or ecosystem activity
+- proposal creation requires a proposer stake
+- the proposer stake is recorded as a `YES` vote
+- voters lock `PPRF` into the proposal
+- each address can vote once
+- one proposal can be active at a time
+- proposal finalization is required before execution or claim
+- locked voting funds are reclaimed by address after the proposal is closed
 
-This document explains both modes in detail.
+The passage rule is:
 
-## Shared Governance Foundations
+```text
+yes_votes * 3 >= no_votes * 4
+yes_votes * 10 > PPRF total_supply
+```
 
-Before the two modes diverge, they share the same underlying governance
-mechanics:
+This requires both relative support and absolute support.
 
-- proposals are created on-chain
-- proposal creation requires a locked `PPRF` proposer stake
-- the proposer automatically records a `YES` vote with that locked stake
-- additional voters lock `PPRF` into the proposal to vote
-- each address may successfully vote only once per proposal
-- governance starts with a `1`-epoch default proposal duration
-- the live proposal duration may later be changed through governance itself
-  within the `7`-to-`14` epoch range
-- after the voting window ends, the proposal must be finalized on-chain
-- a still-active proposal may also be resolved early when its result is already
-  mathematically fixed under the current passage rule
-- locked voting funds are reclaimed later by the voter address itself
+## Executable Governance
 
-The current proposal passage rule requires both:
+Executable proposals authorize on-chain state changes.
 
-- `yes_votes * 3 >= no_votes * 4`
-- `yes_votes * 10 > PPRF total_supply`
+The lifecycle is:
 
-So a proposal passes only if:
+1. create proposal
+2. vote
+3. finalize as `PASSED`
+4. execute before `end_epoch + 3`
+5. mark the proposal `EXECUTED`
 
-- support clearly exceeds opposition, and
-- support also exceeds ten percent of the total `PPRF` supply
+Execution is intentionally separate from passage. Any account may submit the
+execution transaction if the proposal is valid and still inside its execution
+window.
 
-## Mode 1: Directly Executable Governance
+## Direct Governance Actions
 
-## Definition
+Some executable actions are handled entirely inside the governance package by
+`governance_voting::execute_proposal`:
 
-Directly executable governance is used for decisions that should produce a
-concrete change to on-chain protocol state after a successful vote.
+- `ACTION_SET_FEE_RECIPIENT`
+- `ACTION_NOMINATE_OPERATOR`
+- `ACTION_SET_PROPOSAL_CREATION_PAUSED`
+- `ACTION_SET_PROPOSER_THRESHOLD`
+- `ACTION_SET_UPGRADE_AUTHORITY`
+- `ACTION_SET_PROPOSAL_DURATION_EPOCHS`
+- `ACTION_SET_GOVERNANCE_ACTION_ENABLED`
+- `ACTION_SET_DIRECT_AUTHORITY_MODE`
 
-In this mode:
+These affect `GovernanceVault`, `GovernanceConfig`, or the operator handoff
+flow. They do not require a cross-package execution adapter.
 
-1. a proposal is created
-2. the proposal is voted on
-3. the proposal is finalized
-4. a follow-up on-chain transaction calls `execute_proposal`
-5. the proposal outcome is applied to protocol state
+## Governance Action Availability
 
-So, passage alone does **not** immediately mutate state. A passed executable
-proposal still requires an execution transaction.
+`GovernanceConfig` maintains an action availability table.
 
-That execution right is also time-bounded:
+Creating or executing a proposal requires the target action to be enabled. This
+lets the package contain code for a protocol capability before that capability
+is available as a live governance action.
 
-- a passed executable proposal is only executable for `3` epochs after its
-  `end_epoch`
-- after that, it must be treated as stale and can be marked `EXPIRED`
+`ACTION_SET_GOVERNANCE_ACTION_ENABLED` is the governance-controlled action used
+to enable or disable other known actions. It cannot disable itself.
 
-This is a normal and deliberate separation between:
+This supports the protocol rule:
 
-- governance legitimacy (`vote` + `finalize`)
-- protocol execution (`execute_proposal`)
+```text
+UpgradeCap makes code available.
+Governance enables protocol capabilities.
+```
 
-## What It Is Used For
+## Proposal-Ticket Governance Actions
 
-This mode is appropriate when the governance result should directly alter
-protocol configuration, authority, or routing.
+Fee-manager and publishing-specific artifact actions are executable governance
+actions, but they are not executed directly by `governance_voting`.
 
-In the current implementation, executable governance supports the following
-actions:
+Current proposal-ticket actions are:
 
-- `SET_PUBLISHING_FEE_LEVEL`
-- `SET_COMMENTS_FEE_LEVEL`
-- `SET_FEE_RECIPIENT`
-- `NOMINATE_OPERATOR`
-- `SET_PROPOSAL_CREATION_PAUSED`
-- `SET_PROPOSER_THRESHOLD`
-- `SET_UPGRADE_AUTHORITY`
-- `SET_PROPOSAL_DURATION_EPOCHS`
+- `ACTION_SET_COMMENTS_FEE_LEVEL`
+- `ACTION_SET_ARTIFACT_TYPE_ENABLED`
+- `ACTION_SET_ARTIFACT_FEE_LEVEL`
+- `ACTION_ACTIVATE_ARTIFACT_TYPE`
 
-These actions affect one or more of:
+Comments fee changes consume the proposal into a `GovernanceActionTicket` and
+apply the approved fee level to `FeeManager`.
 
-- `GovernanceVault`
-- `GovernanceConfig`
-- operator nomination flow
-- fee configuration
-- governance access conditions
+Publishing artifact actions are executed through publishing package entrypoints:
 
-## Current Executable Governance Content
+- `publishing::execute_artifact_type_enabled_proposal`
+- `publishing::execute_artifact_fee_level_proposal`
+- `publishing::execute_artifact_type_activation_proposal`
 
-### 1. Publishing Fee Level
+This is required because `publishing` depends on `governance`. If
+`governance_voting` imported `publishing`, the packages would form a dependency
+cycle.
 
-Governance can change the protocol-level fee charged in:
+## Governance Action Tickets
 
-- `publishing::finalize_paper`
-- `publishing::add_version`
+For proposal-ticket execution, `governance_voting` consumes a passed proposal
+and returns a one-time `GovernanceActionTicket`.
 
-This directly affects protocol pricing for paper publication and version
-updates.
+The ticket is created only by:
 
-### 2. Comments Fee Level
+```move
+governance_voting::consume_executable_proposal_action
+```
 
-Governance can change the protocol-level fee charged in:
+That function verifies:
 
-- `comments::add_onchain_comment`
-- `comments::add_blob_comment`
+- config and proposal versions
+- registry ID
+- proposal type is executable
+- proposal status is `PASSED`
+- proposal is not already executed
+- action type matches the expected action
+- execution window has not expired
 
-This directly affects protocol pricing for discussion activity.
+It then marks the proposal executed and returns the ticket to the caller.
 
-### 3. Fee Recipient
+The ticket lets another package apply the already-approved action without
+letting that package forge governance legitimacy.
 
-Governance can change the `fee_recipient` address.
+`GovernanceActionTicket` is linear and has no `drop` ability. A transaction that
+creates a ticket must pass it to the appropriate application function in the
+same transaction.
 
-This allows the protocol to redirect fee income to:
+## Operator Transfer Cancellation
 
-- a team-controlled address
-- a treasury-controlled address
-- a later treasury contract or treasury custody path
+Operator handoff cancellation can be triggered in two ways:
 
-### 4. Operator Nomination
+- direct authority, if the current direct-authority mode still permits that
+  emergency operation
+- executable PPRF governance through `ACTION_CANCEL_OPERATOR_TRANSFER`
 
-Governance can nominate a new operator.
+The proposal execution path for cancellation takes the pending transfer objects
+directly and clears the pending operator state after the governance proposal has
+passed and while its execution window is still valid.
 
-This does not directly replace the current operator in one step. Instead, it
-initiates the operator handoff path handled in the `governance` package. This
-preserves the protocol's separation between:
+## Permissionless Execution
 
-- legitimacy layer
-- execution layer
+Proposal execution and proposal-ticket consumption are permissionless.
 
-### 5. Proposal Creation Pause
+Any account may trigger execution if it supplies the correct objects and the
+proposal satisfies the rules. This prevents a passed proposal from being held
+hostage by an operator, proposer, or admin address.
 
-Governance can pause or unpause proposal creation.
+The caller does not gain discretionary authority. The proposal payload and
+action type determine what can happen.
 
-This is a protocol-level governance management control that can be useful for:
+## Operator Boundary
 
-- emergency situations
-- governance maintenance windows
-- temporarily freezing new proposal creation
+The operator remains useful for bounded operational work, such as emergency or
+maintenance actions that the protocol deliberately keeps operator-gated.
 
-### 6. Proposer Threshold
+Artifact type activation and artifact type fee changes are not operator
+configuration. They are protocol configuration and should go through executable
+governance.
 
-Governance can change the proposer threshold itself through the same governance
-system.
+## Direct Authority Sunset
 
-This means the community can tighten or loosen the minimum proposal stake
-requirement without introducing a separate governance channel.
+`GovernanceVault` records a direct authority mode:
 
-The current allowed range is:
+- full
+- emergency
+- read-only
+- disabled
 
-- minimum: `100,000 PPRF`
-- maximum: `1,000,000,000 PPRF`
+`ACTION_SET_DIRECT_AUTHORITY_MODE` lets token governance reduce or permanently
+disable the direct authority surface.
 
-### 7. Upgrade Authority
+The sunset mechanism only gates direct `governance_authority` mutations. It does
+not block:
 
-Governance can also change the protocol's official `upgrade_authority`
-address.
+- PPRF proposal execution
+- proposal-ticket execution
+- `upgrade_authority` package upgrade and migration functions
+- operator actions that are separately permit-gated
 
-This address is intended to identify the account or custody path that should
-control future package upgrades for the PaperProof contracts.
+Emergency mode keeps narrow recovery operations available, such as
+upgrade-authority recovery and operator nomination. Read-only and disabled modes
+reject direct authority mutations. Disabled mode is irreversible.
 
-This is useful for:
+## Signal Governance
 
-- rotating upgrade control to a new operational address
-- moving upgrade control into multisig or treasury custody later
-- making upgrade-control changes subject to the same public governance process
-  as other protocol authority changes
+Signal proposals create a formal on-chain governance outcome without direct
+state mutation.
 
-Important boundary:
+Current signal actions are:
 
-- governance can record and update the official `upgrade_authority`
-- actual Sui package upgrades still depend on the real `UpgradeCap` being held
-  by that address or custody path
+- `ACTION_SIGNAL_REPLACE_OPERATOR`
+- `ACTION_SIGNAL_FEATURE_DIRECTION`
+- `ACTION_SIGNAL_POLICY_POSITION`
 
-So this action governs the protocol-recognized upgrader identity, while the
-real package-upgrade path must still be operationally aligned with Sui's
-native upgrade model.
-
-### 8. Proposal Duration
-
-Governance can also change the live proposal duration used for newly created
-proposals.
-
-This is useful because:
-
-- the protocol can start with a very short window for early validation;
-- the community can later move into a more production-like voting cadence; and
-- emergency correction of an unsuitable duration does not require immediate
-  package replacement.
-
-The current rule is:
-
-- initial default duration: `1` epoch
-- governance-set runtime duration must stay between `7` and `14` epochs
-
-So the protocol intentionally distinguishes between:
-
-- a short bootstrap/testing default
-- and the later governance-controlled production range
-
-## Why Executable Governance Requires a Separate Execution Transaction
-
-A passed executable proposal does not mutate state by itself.
-
-Instead, the protocol deliberately requires:
-
-- a successful vote
-- proposal finalization
-- a separate `execute_proposal` transaction
-
-This pattern has several advantages:
-
-- clearer execution trace
-- explicit transition from governance result to protocol change
-- reduced ambiguity about whether a proposal has merely passed or has actually
-  been applied
-- more controllable governance operations
-
-So in PaperProof, executable governance is best understood as:
-
-- **vote to authorize**
-- **execute to apply**
-
-But now with one additional rule:
-
-- **execute before the execution-validity window expires**
-
-If that does not happen, the proposal no longer remains safely executable
-indefinitely.
-
-## Early Resolution Before Voting End
-
-PaperProof governance also now allows a proposal to be closed before its
-configured `end_epoch`, but only when the final outcome can already be proven
-from the current vote totals and the remaining uncast voting supply.
-
-That means:
-
-- a proposal can resolve early as `PASSED` if even the worst-case remaining
-  `NO` votes cannot overturn it
-- a proposal can resolve early as `REJECTED` if even the best-case remaining
-  `YES` votes cannot rescue it
-
-This is permissionless:
-
-- any account may call the early-resolution interface
-
-If the result is still genuinely open, the call fails and the proposal remains
-active.
-
-## Typical Use Cases for Executable Governance
-
-Examples of decisions that fit this mode:
-
-- raising or lowering publishing fees
-- adjusting comments fees
-- redirecting fee revenue to a treasury
-- rotating the official upgrade authority
-- replacing the active operator
-- changing proposal-spam resistance parameters
-
-## Execution Expiry for Passed Proposals
-
-Executable proposals are no longer valid forever after passage.
-
-The current rule is:
-
-- once an executable proposal has passed, it remains executable only until
-  `end_epoch + 3`
-
-After that point:
-
-- a late `execute_proposal` attempt will not apply the action;
-- instead, the proposal is marked `EXPIRED`; and
-- any account may also explicitly mark the stale passed proposal as expired.
-
-This prevents an old passed proposal from lingering indefinitely as a latent
-governance risk.
-
-These are all protocol-state decisions and are therefore good candidates for
-direct execution.
-
-## Mode 2: Signal / Directional Governance
-
-## Definition
-
-Signal governance is used for decisions that should create a formal on-chain
-governance outcome without directly modifying protocol state.
-
-In this mode:
-
-1. a proposal is created
-2. the proposal is voted on
-3. the proposal is finalized
-4. the result becomes an on-chain record of community will
-5. no direct protocol-state execution occurs
-
-These proposals are intentionally **not** executable through
-`execute_proposal`.
-
-So signal governance is not about automatically changing the contract state.
-Instead, it is about:
-
-- recording a formal governance position
-- expressing community intent
-- authorizing or legitimizing off-chain action
-
-## What It Is Used For
-
-This mode is appropriate for matters that are too broad, too operational, or
-too off-chain in nature to be represented as a simple contract state update.
-
-In the current implementation, signal governance supports:
-
-- `SIGNAL_REPLACE_OPERATOR`
-- `SIGNAL_FEATURE_DIRECTION`
-- `SIGNAL_POLICY_POSITION`
-
-These are intentionally broad enough to support community decision-making that
-does not map cleanly to a single on-chain state mutation.
-
-## Current Signal Governance Content
-
-### 1. Signal Replacement of Operator
-
-This lets the community formally express that it believes the current operator
-should be replaced, even if the protocol does not immediately perform that
-replacement by execution.
-
-This is useful when:
-
-- the community wants to register dissatisfaction
-- the matter requires additional coordination before an executable operator
-  replacement proposal is submitted
-- the signal itself is politically or operationally valuable
-
-### 2. Signal Feature Direction
-
-This lets the community indicate support or opposition for a future protocol or
-product direction.
-
-Typical examples:
-
-- whether a new frontend should be developed
-- whether a new product capability should be prioritized
-- whether a certain interaction mode should be added
-- whether a future storage or verification feature should be pursued
-
-This is especially useful for research and development planning.
-
-### 3. Signal Policy Position
-
-This lets the community register support for a policy direction without
-immediately translating that position into a parameter change.
-
-Typical examples:
-
-- content incentive programs
-- off-chain points systems
-- airdrop eligibility ideas
-- moderation philosophy
-- ecosystem participation rules
-- research or partnership directions
-
-## Why Signal Governance Matters
-
-Not all legitimate governance questions are contract-parameter questions.
-
-In many real protocol environments, some important decisions concern:
-
-- development priorities
-- operator legitimacy
-- ecosystem incentives
-- marketing or community campaigns
-- off-chain treasury spending ideas
-- roadmap sequencing
-
-These matters may be too complex or too operationally broad to express as a
-single state mutation inside a smart contract.
-
-Signal governance gives the community a way to:
-
-- express a formal position
-- create a durable on-chain governance record
-- provide legitimacy for downstream off-chain execution
-
-## Typical Use Cases for Signal Governance
-
-Examples of decisions that fit this mode:
-
-- whether the project should launch a new official frontend
-- whether a future protocol feature should be developed
-- whether the community supports replacing an operator in principle
-- whether an off-chain points campaign should be launched
-- whether publishing and commenting activity should count toward a later
-  airdrop policy
-
-These do not necessarily require direct state change at vote time, but they
-still benefit from formal governance backing.
-
-## How Signal Governance Supports Off-Chain Execution
-
-When a signal proposal passes, it does not change protocol parameters directly.
-
-Instead, it provides:
-
-- formal governance authorization
-- recorded community legitimacy
-- a public decision artifact that teams, operators, committees, and community
-  actors can rely on
-
-Examples:
-
-- a passed feature-direction proposal can justify new development work
-- a passed policy-position proposal can justify a new incentive program
-- a passed operator-replacement signal can justify preparing a later executable
-  replacement proposal
-
-So signal governance should be understood as:
-
-- **vote to express and authorize**
-- **execute through social, operational, or later protocol processes**
-
-## Relationship Between the Two Governance Modes
-
-These two modes are not competitors. They are complementary.
-
-### Executable Governance
-
-Best for:
-
-- contract-state changes
-- authority changes
-- fee changes
-- governance parameter changes
-
-### Signal Governance
-
-Best for:
+Signal proposals are useful for:
 
 - roadmap direction
-- community sentiment
-- off-chain development
-- incentive and policy direction
-- matters that need legitimacy before implementation
+- operator sentiment
+- ecosystem policy
+- off-chain programs
+- future feature prioritization
 
-Together they form a governance model in which:
-
-- the protocol can directly change what should be contract-enforced
-- the community can still govern broader project direction even when the matter
-  is not reducible to a contract write
-
-## Current Governance Boundary
-
-At the current stage of `PaperProof`, governance already supports:
-
-- **protocol parameter governance**
-- **operator-related governance**
-- **community will expression for non-parameter matters**
-
-What it does not yet provide is:
-
-- automatic execution of broad off-chain programs
-- automatic execution of frontend development work
-- automatic execution of points campaigns or airdrops
-
-Those still require off-chain implementation, even when they have on-chain
-governance legitimacy.
-
-This is intentional and appropriate for the current protocol stage.
+They are not executable through `execute_proposal`.
 
 ## Summary
 
-The current `PaperProof` governance system supports two different but related
-modes:
+PaperProof separates:
 
-- **Directly executable governance**, for decisions that should directly change
-  protocol state through an execution transaction
-- **Signal governance**, for decisions that should register community will and
-  support off-chain action without directly mutating contract state
+- governance legitimacy: voting and finalization
+- protocol execution: applying passed executable proposals
+- business-module execution: package-specific execution through proposal tickets
+- operational response: limited operator-gated actions
+- community intent: signal proposals
 
-This two-mode design allows `PaperProof` to govern both:
-
-- what the protocol does on-chain
-- and what the community wants the broader project to do beyond on-chain
-  parameter updates
+This keeps governance explicit without forcing every package to depend on every
+other package.

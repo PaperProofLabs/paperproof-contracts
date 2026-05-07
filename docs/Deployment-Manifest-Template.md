@@ -76,8 +76,17 @@ Use one filled manifest per environment and per release.
 
 ### Publishing / Governance Root
 
-- `PaperRegistry` object ID:
-- `PaperRegistry` creation tx digest:
+- `PaperProofRoot` object ID:
+- `PaperProofRoot` creation tx digest:
+- `TypeRegistry` object ID:
+- `FeeManager` object ID:
+- `TypeIndex` object IDs by artifact type:
+  - preprint:
+  - blog_post:
+  - technical_report:
+  - dataset:
+  - software_release:
+  - generic_file:
 - `GovernanceVault` object ID:
 - `GovernanceVault` creation tx digest:
 - Initial `OperatorPermit` recipient:
@@ -99,10 +108,9 @@ Use one filled manifest per environment and per release.
 
 ### Fee Configuration
 
-- Publishing fee level:
-- Publishing fee amount:
-- Comments fee level:
+- Comments fee level in `FeeManager`:
 - Comments fee amount:
+- Artifact fee levels in `FeeManager`:
 - Fee recipient:
 
 ### Proposal Configuration
@@ -112,6 +120,7 @@ Use one filled manifest per environment and per release.
 - Governance total `PPRF` supply recorded:
 - Proposal duration (epochs):
 - Active proposal ID:
+- Enabled governance actions:
 
 ## 7. Upgrade Configuration
 
@@ -158,7 +167,9 @@ The frontend and external clients should use only the canonical IDs below.
 - Official governance package ID:
 - Official comments package ID:
 - Official publishing package ID:
-- `PaperRegistry` object ID:
+- `PaperProofRoot` object ID:
+- `TypeRegistry` object ID:
+- `FeeManager` object ID:
 - `GovernanceVault` object ID:
 - `GovernanceConfig` object ID:
 - Fee recipient:
@@ -175,13 +186,15 @@ The frontend and external clients should use only the canonical IDs below.
 
 Mark each item after verification.
 
-- [ ] `GovernanceVault.registry_id` equals the official `PaperRegistry` ID
-- [ ] `GovernanceConfig.registry_id` equals the official `PaperRegistry` ID
+- [ ] `GovernanceVault.registry_id` equals the official `PaperProofRoot` ID
+- [ ] `GovernanceConfig.registry_id` equals the official `PaperProofRoot` ID
+- [ ] `FeeManager.registry_id` equals the official `PaperProofRoot` ID
+- [ ] `TypeRegistry.registry_id` equals the official `PaperProofRoot` ID
 - [ ] `publishing` frontend config points to the official package ID
 - [ ] `comments` frontend config points to the official package ID
 - [ ] `governance` frontend config points to the official package ID
-- [ ] `publishing_fee_level` is correct
-- [ ] `comments_fee_level` is correct
+- [ ] artifact-type fee levels are correct in `FeeManager`
+- [ ] comments fee level is correct in `FeeManager`
 - [ ] `fee_recipient` is correct
 - [ ] `upgrade_authority` is correct
 - [ ] `PPRF total_supply` in governance config is correct
@@ -191,17 +204,16 @@ Mark each item after verification.
 
 ### Publishing
 
-- Reserve code test tx:
-- Finalize paper test tx:
-- Add version test tx:
+- Publish artifact test tx:
+- Add artifact version test tx:
 - Transfer owner test tx:
 
 ### Comments
 
 - Add on-chain comment tx:
 - Add blob-backed comment tx:
-- Like paper tx:
-- Unlike paper tx:
+- Like artifact discussion target tx:
+- Unlike artifact discussion target tx:
 
 ### Governance
 
@@ -251,8 +263,8 @@ Notes:
 
 If this deployment is the result of an upgrade, record:
 
-- previous package IDs:
-- previous root object versions:
+- package IDs before upgrade:
+- root object versions before upgrade:
 - migration tx digests:
 - any package IDs replaced in frontend config:
 - any rollback considerations:

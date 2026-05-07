@@ -1,235 +1,123 @@
 # Treasury and Fee Management
 
-## Overview
+This document describes the current protocol fee model.
 
-This document summarizes the current fee-handling model implemented in the
-`paperproof-contracts` repository and outlines the intended evolution toward a
-dedicated `Treasury` contract for the `PaperProof` protocol.
+## Fee Surfaces
 
-The current protocol already enforces fee collection at the contract layer for:
+PaperProof uses `governance::FeeManager` as the canonical fee configuration
+object.
 
-- `publishing::finalize_paper`
-- `publishing::add_version`
-- `comments::add_onchain_comment`
-- `comments::add_blob_comment`
+It currently stores:
 
-The current protocol does **not** yet implement an on-chain treasury object that
-holds, budgets, or disburses accumulated fee revenue.
+```text
+fee_key -> fee_level
+```
 
-## Current Fee Logic
+Publishing fees use artifact type IDs as fee keys:
 
-### Fee Types
+```text
+artifact_type -> fee_level -> SUI amount
+```
 
-The protocol currently maintains two fee schedules inside `GovernanceVault`:
+Comments use the reserved comments fee key inside the same `FeeManager`.
 
-- `publishing_fee_level`
-- `comments_fee_level`
+If a fee key has no explicit fee level, it is treated as free.
 
-These levels are interpreted by the `governance` package and applied in:
+## Fee Manager
 
-- `governance::collect_publishing_fee`
-- `governance::collect_comments_fee`
+`FeeManager` is a shared object bound to the official `PaperProofRoot` by
+`registry_id`.
 
-The fees are charged in `SUI`, not in `PPRF`.
+Both publishing and comments verify that the supplied `FeeManager` belongs to
+the same registry as the official protocol root. A foreign fee manager cannot be
+used to bypass fees.
 
-### Fee Recipient
+## Fee Recipient
 
-The current implementation stores a single fee recipient inside
-`GovernanceVault`:
+`GovernanceVault` stores:
 
-- `fee_recipient: address`
+```text
+fee_recipient: address
+```
 
-When a publishing or comments fee is collected, the protocol immediately
-transfers the required `SUI` amount to `fee_recipient`.
+When a fee is collected, the required `SUI` amount is transferred immediately to
+that address. The contracts do not yet hold accumulated protocol revenue in a
+treasury object.
 
-This means that the current system uses a **direct recipient model**, not an
-on-chain treasury custody model.
+Every successful nonzero fee collection emits `FeeCollectedEvent` with the
+registry ID, fee key, artifact type when applicable, payer, recipient, and
+amount. This gives treasury dashboards a direct event stream even though the
+current contracts route revenue immediately instead of holding an on-chain
+treasury balance.
 
-### Official Fee Binding
+## Governance Control
 
-Fee collection is now bound to the official protocol instance:
+Fee configuration is protocol configuration.
 
-- `publishing` checks that the provided `GovernanceVault` belongs to the current
-  `PaperRegistry`
-- `comments` checks that the provided `GovernanceVault` belongs to the current
-  `CommentsTree.registry_id`
+Publishing artifact fees are changed by executable governance through proposal
+tickets:
 
-As a result, protocol users cannot bypass fees by routing calls through an
-unrelated vault with different fee settings.
+- `ACTION_SET_ARTIFACT_FEE_LEVEL`
+- `ACTION_ACTIVATE_ARTIFACT_TYPE`
 
-## What the Current Model Can Do
+Comments fees are also stored in `FeeManager` and can be changed through the
+comments fee governance action. After a proposal passes, a permissionless
+execution transaction consumes the proposal into a `GovernanceActionTicket`,
+then applies the approved comments fee level to `FeeManager`.
 
-The current model already supports:
+The direct authority path can still set the comments fee while direct authority
+is in full mode. That path is intentionally sunsettable by governance and should
+be treated as bootstrap or recovery surface rather than the normal operating
+path.
 
-- protocol-level fee enforcement
-- governance-controlled fee level updates
-- governance-controlled fee recipient updates
-- immediate fee routing to a designated address
+## Fee Amounts
 
-This is sufficient for:
+Fee levels are interpreted by the governance package:
 
-- direct fee collection into a team-controlled address
-- direct fee collection into a treasury-controlled address
-- future migration from one treasury endpoint to another
+- `FREE`
+- `MICRO`
+- `LOW`
+- `STANDARD`
+- `HIGH`
+- `PREMIUM`
 
-## What the Current Model Does Not Yet Do
+The concrete amounts are currently defined in `governance.move`.
 
-The current model does **not** yet support:
+## Current Capabilities
 
-- holding fee balances inside a protocol treasury object
-- querying treasury-controlled protocol revenue on-chain
-- proposal-based treasury disbursements
-- on-chain budgeting
-- grant allocation
-- revenue splitting inside the protocol
+The current model supports:
 
-In other words, the current system lets governance decide:
+- type-specific publishing fees
+- comments fees in the shared `FeeManager`
+- governance-controlled fee recipient changes
+- proposal-gated artifact fee changes
+- proposal-gated comments fee changes
+- immediate routing of fee revenue
+- foreign vault/fee manager rejection
 
-- **how much is charged**
-- **where fees are sent**
+It does not yet support:
 
-but not yet:
+- on-chain treasury balance accounting
+- proposal-based treasury disbursement
+- revenue splits
+- grant budgeting
 
-- **how accumulated fee revenue is managed after receipt**
+## Treasury Evolution
 
-## Current Operational Interpretation
+A dedicated treasury should remain a separate module or package.
 
-Under the present design, the most realistic interpretation is:
+Near-term path:
 
-- `PaperProof` protocol fees are collected by the contracts
-- the contracts immediately transfer fee revenue to `fee_recipient`
-- `fee_recipient` is treated as the operational sink for protocol income
+1. deploy or designate a treasury-controlled address
+2. use governance to set `fee_recipient`
+3. keep `FeeManager` as the canonical fee configuration object
 
-If the `fee_recipient` is controlled by the development team, then protocol fees
-already function as direct protocol revenue.
+Longer-term path:
 
-If the `fee_recipient` is controlled by a treasury wallet or treasury contract,
-then protocol fees already function as treasury income.
+1. introduce a treasury object
+2. route fees into treasury custody
+3. add governance-approved disbursement flows
+4. optionally add budget, grant, or revenue-sharing policies
 
-## Treasury as a Future Dedicated Module
-
-### Why Treasury Should Be Separate
-
-A dedicated `Treasury` module is best treated as a separate contract package,
-rather than embedded into:
-
-- `publishing`
-- `comments`
-- `governance`
-
-This keeps responsibilities clean:
-
-- `publishing`: publication lifecycle and artifact binding
-- `comments`: discussion tree management
-- `governance`: governance legitimacy, operator authority, protocol parameters
-- `treasury`: custody, budgeting, disbursement, and protocol financial policy
-
-### Minimal Treasury Integration Path
-
-The simplest future treasury integration path is:
-
-1. deploy a dedicated `Treasury` contract or treasury-controlled address
-2. set that treasury-controlled address as `fee_recipient`
-3. keep existing `publishing/comments` fee logic unchanged
-
-This allows a treasury to begin receiving protocol income without requiring a
-large rewrite of existing fee collection logic.
-
-## Two-Stage Treasury Evolution Plan
-
-### Stage 1: Address-Based Treasury
-
-In the first stage, Treasury can be implemented as a relatively independent
-module or operational custody layer.
-
-Key properties:
-
-- the treasury controls a receiving address
-- governance can update `fee_recipient` to that address
-- protocol fees flow directly into treasury custody
-- treasury disbursement is managed externally or by a simple treasury module
-
-Advantages:
-
-- minimal contract changes
-- fast integration
-- preserves current fee enforcement model
-- allows future evolution without changing `publishing/comments`
-
-Risks to avoid in Stage 1:
-
-- making the treasury recipient irreversible
-- binding treasury control to a non-recoverable personal key
-- having no migration path for already-collected funds
-
-### Stage 2: Governance-Integrated Treasury
-
-In the second stage, Treasury can become more deeply integrated with protocol
-governance.
-
-Possible capabilities:
-
-- treasury balance tracked by a shared treasury object
-- proposal-based disbursement
-- budget approval through `PPRF` governance
-- operator-executed treasury actions authorized by passed proposals
-- grants, development funding, and community spending logic
-
-At this stage, governance would no longer control only:
-
-- fee levels
-- fee recipient
-
-but also:
-
-- treasury spending decisions
-- treasury policy
-- structured protocol resource allocation
-
-## Why Stage 1 Does Not Block Stage 2
-
-Stage 1 and Stage 2 are not inherently in conflict, provided that the initial
-treasury setup preserves migration flexibility.
-
-The current architecture already helps here because:
-
-- `fee_recipient` is governance-controlled and can be changed
-- `publishing/comments` depend only on `fee_recipient`, not on treasury internals
-- a later treasury implementation can replace an earlier treasury endpoint
-
-To preserve upgradeability, Stage 1 treasury design should ensure:
-
-- treasury-controlled assets can be migrated
-- treasury control can be rotated
-- fee recipient can be updated by governance
-- protocol modules do not hard-code treasury internals
-
-If those conditions hold, a simple initial treasury does not prevent later
-upgrading to a stronger governance-integrated treasury.
-
-## Recommended Near-Term Direction
-
-For the current `PaperProof` contract system, the most practical near-term path
-is:
-
-1. keep protocol fee enforcement in `publishing/comments`
-2. keep fee configuration in `governance`
-3. introduce Treasury later as a separate package
-4. route protocol fees into Treasury by changing `fee_recipient`
-5. only after that, expand governance execution into treasury spending
-
-This preserves the modularity already present in the repository and avoids
-premature coupling between protocol operations and financial management.
-
-## Summary
-
-The current `PaperProof` contracts already implement strong protocol-level fee
-collection, but they do so through a direct recipient model rather than through
-an on-chain treasury balance.
-
-This is already useful and operationally valid.
-
-The natural next step is not to rewrite fee collection, but to introduce a
-dedicated Treasury module that can first receive fees as `fee_recipient`, and
-later evolve into a governance-integrated treasury layer for disbursement,
-budgeting, and ecosystem funding.
+This keeps `publishing`, `comments`, `governance`, and future `treasury`
+responsibilities separate.

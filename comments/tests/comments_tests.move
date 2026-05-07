@@ -3,7 +3,7 @@ module paperproof_comments::comments_tests;
 
 use std::string;
 
-use paperproof_governance::governance::{Self as governance, GovernanceVault};
+use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault};
 use pprf::pprf::PPRF;
 use sui::clock;
 use sui::coin;
@@ -19,7 +19,7 @@ const USER2: address = @0xC;
 fun shared_tree(
     scenario: &mut ts::Scenario,
     registry_id: ID,
-    paper_object_id: ID,
+    target_series_id: ID,
     owner: address,
     paper_key: vector<u8>,
 ) {
@@ -31,12 +31,15 @@ fun shared_tree(
     );
     governance::share_vault(vault);
     transfer::public_transfer(permit, ADMIN);
+    let fee_manager = governance::new_fee_manager(registry_id, ts::ctx(scenario));
+    governance::share_fee_manager(fee_manager);
     let clock_ref = clock::create_for_testing(ts::ctx(scenario));
     let tree = comments::new_tree(
         registry_id,
         owner,
         string::utf8(paper_key),
-        paper_object_id,
+        target_series_id,
+        1,
         &clock_ref,
         ts::ctx(scenario),
     );
@@ -66,6 +69,8 @@ fun test_create_tree_and_owner_controls_tree() {
         assert!(comments::creator(&tree) == ADMIN, 0);
         assert!(comments::owner(&tree) == USER1, 1);
         assert!(comments::registry_id(&tree) == registry_id, 2);
+        assert!(comments::target_series_id(&tree) == paper_object_id, 8);
+        assert!(comments::target_artifact_type(&tree) == 1, 9);
         assert!(comments::root_comment_id(&tree) == 0, 3);
         assert!(comments::total_comments(&tree) == 0, 4);
         assert!(comments::has_comment(&tree, 0), 5);
@@ -105,11 +110,13 @@ fun test_add_onchain_and_blob_comments() {
     {
         let mut tree = ts::take_shared<CommentsTree>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
 
         comments::add_onchain_comment(
             &mut tree,
             &vault,
+            &fee_manager,
             0,
             b"First on-chain comment",
             option::none(),
@@ -126,17 +133,20 @@ fun test_add_onchain_and_blob_comments() {
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(tree);
         ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::next_tx(&mut scenario, USER2);
     {
         let mut tree = ts::take_shared<CommentsTree>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
 
         comments::add_blob_comment(
             &mut tree,
             &vault,
+            &fee_manager,
             1,
             b"walrus-blob-1",
             option::none<ID>(),
@@ -158,6 +168,75 @@ fun test_add_onchain_and_blob_comments() {
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(tree);
         ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 20, location = paperproof_comments::comments)]
+fun test_hidden_comment_cannot_receive_replies() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x112);
+    let paper_object_id = object::id_from_address(@0x212);
+
+    shared_tree(
+        &mut scenario,
+        registry_id,
+        paper_object_id,
+        USER1,
+        b"PaperProof-2026-0012",
+    );
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            0,
+            b"Moderated parent",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        comments::set_comment_status(
+            &mut tree,
+            1,
+            comments::comment_status_hidden(),
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            1,
+            b"Reply should fail",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::end(scenario);
@@ -181,22 +260,26 @@ fun test_comments_fee_level_requires_payment() {
 
     ts::next_tx(&mut scenario, ADMIN);
     {
-        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
-        governance::set_comments_fee_level(&mut vault, 2, ts::ctx(&mut scenario));
-        assert!(governance::comments_fee_amount(&vault) == 100_000, 24);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
+        governance::set_comments_fee_level(&vault, &mut fee_manager, 2, ts::ctx(&mut scenario));
+        assert!(governance::comments_fee_amount(&fee_manager) == 100_000, 24);
         ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::next_tx(&mut scenario, USER1);
     {
         let mut tree = ts::take_shared<CommentsTree>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
         let payment = coin::mint_for_testing<SUI>(100_000, ts::ctx(&mut scenario));
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
 
         comments::add_onchain_comment(
             &mut tree,
             &vault,
+            &fee_manager,
             0,
             b"Paid comment",
             option::some(payment),
@@ -207,6 +290,7 @@ fun test_comments_fee_level_requires_payment() {
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(tree);
         ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::end(scenario);
@@ -335,20 +419,24 @@ fun test_comments_fee_requires_payment_coin() {
 
     ts::next_tx(&mut scenario, ADMIN);
     {
-        let mut vault = ts::take_shared<GovernanceVault>(&scenario);
-        governance::set_comments_fee_level(&mut vault, 1, ts::ctx(&mut scenario));
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
+        governance::set_comments_fee_level(&vault, &mut fee_manager, 1, ts::ctx(&mut scenario));
         ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::next_tx(&mut scenario, USER1);
     {
         let mut tree = ts::take_shared<CommentsTree>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
 
         comments::add_onchain_comment(
             &mut tree,
             &vault,
+            &fee_manager,
             0,
             b"Missing fee coin",
             option::none(),
@@ -359,6 +447,7 @@ fun test_comments_fee_requires_payment_coin() {
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(tree);
         ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::end(scenario);
@@ -399,11 +488,13 @@ fun test_foreign_vault_cannot_bypass_comment_fee_binding() {
     {
         let mut tree = ts::take_shared<CommentsTree>(&scenario);
         let foreign_vault = ts::take_shared_by_id<GovernanceVault>(&scenario, foreign_vault_id);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
 
         comments::add_onchain_comment(
             &mut tree,
             &foreign_vault,
+            &fee_manager,
             0,
             b"Should fail",
             option::none(),
@@ -414,6 +505,7 @@ fun test_foreign_vault_cannot_bypass_comment_fee_binding() {
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(tree);
         ts::return_shared(foreign_vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::end(scenario);

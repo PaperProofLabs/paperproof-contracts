@@ -11,8 +11,8 @@ provides:
 - `GovernanceVault` as the root protocol authority holder;
 - `OperatorPermit` as the revocable execution role;
 - OpenZeppelin `two_step_transfer` for operator nomination and acceptance; and
-- direct governance control over protocol fee settings, operator selection, and
-  the official upgrade authority address.
+- governance-controlled protocol fee settings, operator selection, direct
+  authority sunset, and the official upgrade authority address.
 
 The `PPRF` voting layer adds a formal token-governance mechanism for:
 
@@ -50,7 +50,6 @@ These proposals can be executed on-chain after passing.
 
 Currently implemented executable actions are:
 
-- `ACTION_SET_PUBLISHING_FEE_LEVEL`
 - `ACTION_SET_COMMENTS_FEE_LEVEL`
 - `ACTION_SET_FEE_RECIPIENT`
 - `ACTION_NOMINATE_OPERATOR`
@@ -58,6 +57,11 @@ Currently implemented executable actions are:
 - `ACTION_SET_PROPOSER_THRESHOLD`
 - `ACTION_SET_UPGRADE_AUTHORITY`
 - `ACTION_SET_PROPOSAL_DURATION_EPOCHS`
+- `ACTION_SET_ARTIFACT_TYPE_ENABLED`
+- `ACTION_SET_ARTIFACT_FEE_LEVEL`
+- `ACTION_ACTIVATE_ARTIFACT_TYPE`
+- `ACTION_SET_GOVERNANCE_ACTION_ENABLED`
+- `ACTION_SET_DIRECT_AUTHORITY_MODE`
 
 These proposals are intended to produce enforceable protocol changes.
 
@@ -182,7 +186,7 @@ This model is used because it gives a strong protocol-level guarantee that:
 
 It avoids relying on:
 
-- historical balance snapshots;
+- prior balance snapshots;
 - chain-external balance proofs; or
 - post-hoc object-state validation of moving token objects.
 
@@ -324,7 +328,6 @@ const PROPOSAL_TYPE_SIGNAL: u8 = 2;
 ### Directly Executable Actions
 
 ```move
-const ACTION_SET_PUBLISHING_FEE_LEVEL: u8 = 1;
 const ACTION_SET_COMMENTS_FEE_LEVEL: u8 = 2;
 const ACTION_SET_FEE_RECIPIENT: u8 = 3;
 const ACTION_NOMINATE_OPERATOR: u8 = 4;
@@ -332,6 +335,11 @@ const ACTION_SET_PROPOSAL_CREATION_PAUSED: u8 = 5;
 const ACTION_SET_PROPOSER_THRESHOLD: u8 = 6;
 const ACTION_SET_UPGRADE_AUTHORITY: u8 = 7;
 const ACTION_SET_PROPOSAL_DURATION_EPOCHS: u8 = 8;
+const ACTION_SET_ARTIFACT_TYPE_ENABLED: u8 = 9;
+const ACTION_SET_ARTIFACT_FEE_LEVEL: u8 = 10;
+const ACTION_ACTIVATE_ARTIFACT_TYPE: u8 = 11;
+const ACTION_SET_GOVERNANCE_ACTION_ENABLED: u8 = 12;
+const ACTION_SET_DIRECT_AUTHORITY_MODE: u8 = 13;
 ```
 
 ### Signaling Actions
@@ -358,10 +366,16 @@ const PROPOSAL_STATUS_EXPIRED: u8 = 5;
 
 ```move
 public fun new_governance_config(
-    vault: &GovernanceVault,
+    vault: &mut GovernanceVault,
     ctx: &mut TxContext,
 ): GovernanceConfig
 ```
+
+Creating the governance config binds its object id into the corresponding
+`GovernanceVault`. A vault can bind only one canonical config, and proposal
+execution checks that the supplied config id matches the vault binding. This
+prevents duplicate governance configs from creating parallel active-proposal
+state or bypassing disabled-action settings.
 
 ### Share Governance Config
 
@@ -518,10 +532,46 @@ When a directly executable proposal passes:
 
 1. the proposal remains a governance object with on-chain legitimacy;
 2. the protocol can verify that its passage conditions were satisfied;
-3. `execute_proposal` applies the result to `GovernanceVault` only if it is
-   called within the execution-validity window; and
-4. `GovernanceVault` acts as the bridge from token governance to protocol
-   state.
+3. `execute_proposal` applies governance-internal results to `GovernanceVault`
+   only if it is called within the execution-validity window; and
+4. package-specific execution can consume the proposal into a
+   `GovernanceActionTicket` and apply the approved change in the target package.
+
+Comments fee changes and publishing artifact actions use the ticket path. The
+vote remains in `governance_voting`; the approved action is consumed into a
+linear `GovernanceActionTicket`, and the target module applies the verified
+payload. The ticket has no `drop` ability, so a transaction that creates one
+must consume it in the same transaction.
+
+Comments fee changes update `FeeManager` inside the governance package.
+Publishing artifact actions update `TypeRegistry` and artifact fee entries
+through publishing execution entrypoints.
+
+### Governance Action Availability
+
+`GovernanceConfig` stores an action availability table.
+
+Proposal creation requires the action to be enabled.
+
+Execution intentionally does not re-check action availability. Once a proposal
+has been created, voted, finalized, and passed, later disabling that action must
+not become a retroactive veto over the already-approved proposal.
+
+This lets maintainers ship code for a new governance action while keeping that
+action unavailable until governance enables it, without weakening already-passed
+governance decisions.
+
+Known executable action payloads are also validated at proposal creation time.
+Invalid fee levels, boolean fields, direct-authority modes, action-enable
+targets, and required nonzero addresses are rejected before voting begins.
+
+The enabling path is itself a governance action:
+
+```move
+ACTION_SET_GOVERNANCE_ACTION_ENABLED
+```
+
+It can enable or disable other known actions, but it cannot disable itself.
 
 ### Execution Validity Window
 
@@ -540,7 +590,7 @@ That means:
 - any account may also explicitly call `expire_passed_proposal` after the
   window to clear a stale passed proposal into `EXPIRED`.
 
-This prevents old passed proposals from remaining executable indefinitely.
+This prevents stale passed proposals from remaining executable indefinitely.
 
 This means:
 
@@ -580,10 +630,33 @@ The root authority of the protocol remains inside `GovernanceVault`.
 This avoids the owner-custody trap that would arise if root governance power
 were permanently held by an individual operator address.
 
-## 3. Operator Role
+## 3. Direct Authority Sunset
+
+`GovernanceVault` keeps a direct authority mode so the protocol can move toward
+DAO-first operation without losing upgrade or recovery continuity.
+
+The modes are:
+
+- full
+- emergency
+- read-only
+- disabled
+
+`ACTION_SET_DIRECT_AUTHORITY_MODE` is controlled by PPRF voting. It can reduce
+the direct authority surface, and disabled mode is irreversible.
+
+This only gates direct `governance_authority` mutations. It does not disable
+PPRF proposal execution, proposal-ticket execution, `upgrade_authority`
+upgrade/migration functions, or separately permit-gated operator actions.
+
+## 4. Operator Role
 
 The operator is not the source of governance legitimacy. The operator is a
 revocable executor of day-to-day governance and protocol administration.
+
+Artifact type activation and artifact-specific fee configuration are not
+operator actions. They are protocol configuration changes and use executable
+governance proposals.
 
 The governance system should therefore be understood as:
 
@@ -591,7 +664,7 @@ The governance system should therefore be understood as:
 - the vault applies;
 - the operator executes routine work.
 
-## 4. Use of `two_step_transfer`
+## 5. Use of `two_step_transfer`
 
 OpenZeppelin `two_step_transfer` continues to be used for operator handoff, not
 for root authority handoff.
@@ -604,11 +677,13 @@ In other words:
 - the operator role remains replaceable without risking loss of root governance
   continuity.
 
-## 5. Directly Executable vs Signaling Governance
+## 6. Directly Executable vs Signaling Governance
 
 Directly executable proposals are used for:
 
 - fee level changes;
+- artifact type activation;
+- artifact-specific fee changes;
 - fee recipient changes;
 - upgrade authority changes;
 - proposal duration changes;
@@ -623,7 +698,7 @@ Signaling proposals are used for:
 - broader community legitimacy questions that are not yet represented as
   immediate contract actions.
 
-## 6. Enforcement Boundary
+## 7. Enforcement Boundary
 
 Any user who continues interacting with the official PaperProof protocol
 contracts remains subject to:
@@ -682,7 +757,7 @@ The execution window is currently fixed at:
 - `3` epochs after `end_epoch`
 
 This value is not currently governance-configurable. It exists to ensure that
-old passed proposals cannot remain executable forever.
+stale passed proposals cannot remain executable forever.
 
 ## 10. Permissionless Proposal Closure
 

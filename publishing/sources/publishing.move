@@ -1,19 +1,20 @@
 // Copyright (c) 2026 PaperProof Labs. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-PaperProof-Source-Available
-// Use of this source code is governed by the LICENSE file in the project root.
-// Public readability and auditability do not grant rights to copy, modify,
-// distribute, redeploy, or commercialize this code except as expressly permitted.
 
 module paperproof_publishing::publishing;
 
 use std::string::{Self as string, String};
 
+use paperproof_publishing::artifact_types;
+use paperproof_publishing::validation;
 use paperproof_comments::comments::{Self as comments, CommentsTree};
 use paperproof_governance::governance::{
     Self as governance,
+    FeeManager,
     GovernanceVault,
     OperatorPermit,
 };
+use paperproof_governance::governance_voting::{Self as voting, GovernanceConfig, Proposal};
 
 use sui::clock::{Self as clock, Clock};
 use sui::coin::Coin;
@@ -21,925 +22,1396 @@ use sui::event;
 use sui::sui::SUI;
 use sui::table::{Self as table, Table};
 
-/* ============================================================
-   PaperProof Publishing Registry
+const E_PAUSED: u64 = 1;
+const E_UNSUPPORTED_ROOT_VERSION: u64 = 2;
+const E_UNSUPPORTED_REGISTRY_VERSION: u64 = 3;
+const E_UNSUPPORTED_SERIES_VERSION: u64 = 4;
+const E_INVALID_ARTIFACT_TYPE: u64 = 5;
+const E_ARTIFACT_TYPE_DISABLED: u64 = 6;
+const E_INVALID_INDEX: u64 = 7;
+const E_INVALID_GOVERNANCE_VAULT: u64 = 8;
+const E_INVALID_FEE_MANAGER: u64 = 9;
+const E_EMPTY_ABSTRACT: u64 = 15;
+const E_EMPTY_DESCRIPTION: u64 = 16;
+const E_NOT_OWNER: u64 = 21;
+const E_INVALID_STATUS: u64 = 22;
+const E_INVALID_COMMENTS_TREE: u64 = 23;
+const E_INVALID_GOVERNANCE_ACTION: u64 = 24;
 
-   Design:
-   1. reserve_code():
-      - Generates OriginPaper-{sui_epoch}-{epoch_seq}
-      - Creates a PaperRecord in RESERVED state
-      - No expiry, no cancellation, no reuse
+const PAPERPROOF_ROOT_VERSION: u64 = 1;
+const TYPE_REGISTRY_VERSION: u64 = 1;
+const TYPE_INDEX_VERSION: u64 = 1;
+const ARTIFACT_SERIES_VERSION: u64 = 1;
 
-   2. finalize_paper():
-      - Only reserver can finalize
-      - Binds metadata + Walrus blob info + PDF hash
-      - Creates and binds one CommentsTree for the paper
-      - Changes state from RESERVED to PUBLISHED
-
-   3. add_version():
-      - Only owner can add a new PDF version
-      - Old versions are never deleted or overwritten
-
-   4. record_storage_extension():
-      - Anyone can update storage_end_epoch upward
-      - Intended for shared Walrus blobs that anyone can extend
-
-   5. admin capability custody:
-      - Admin authority is held inside governance::GovernanceVault
-      - Routine execution is performed by the holder of a current OperatorPermit
-      - Operator nomination/accept/cancel is handled by the governance package
-   ============================================================ */
-
-const E_PAUSED: u64 = 2;
-const E_EMPTY_TITLE: u64 = 3;
-const E_EMPTY_ABSTRACT: u64 = 4;
-const E_TOO_MANY_KEYWORDS: u64 = 5;
-const E_TOO_MANY_AUTHORS: u64 = 6;
-const E_NO_AUTHOR: u64 = 7;
-const E_FILE_TOO_LARGE: u64 = 8;
-const E_PAGE_COUNT_TOO_SMALL: u64 = 9;
-const E_PAGE_COUNT_TOO_LARGE: u64 = 10;
-const E_EMPTY_BLOB_ID: u64 = 11;
-const E_EMPTY_BLOB_OBJECT_ID: u64 = 12;
-const E_EMPTY_FILE_HASH: u64 = 13;
-const E_NOT_RESERVER: u64 = 14;
-const E_NOT_OWNER: u64 = 15;
-const E_ALREADY_PUBLISHED: u64 = 16;
-const E_NOT_PUBLISHED: u64 = 17;
-const E_STORAGE_NOT_EXTENDED: u64 = 18;
-const E_INVALID_NEW_OWNER: u64 = 19;
-const E_INVALID_STATUS: u64 = 20;
-const E_EPOCH_REGRESSION: u64 = 21;
-const E_WALRUS_EXTENSION_NOT_IMPLEMENTED: u64 = 22;
-const E_INVALID_GOVERNANCE_VAULT: u64 = 23;
-const E_INVALID_COMMENTS_TREE: u64 = 24;
-const E_UNSUPPORTED_REGISTRY_VERSION: u64 = 25;
-const E_UNSUPPORTED_RECORD_VERSION: u64 = 26;
-const E_RECORD_NOT_IN_REGISTRY: u64 = 27;
-
-const STATUS_RESERVED: u8 = 0;
-const STATUS_PUBLISHED: u8 = 1;
+const SERIES_STATUS_ACTIVE: u8 = 0;
+const SERIES_STATUS_LOCKED: u8 = 1;
+const SERIES_STATUS_HIDDEN: u8 = 2;
 
 const UI_NORMAL: u8 = 0;
 const UI_FLAGGED: u8 = 1;
 const UI_HIDDEN_IN_OFFICIAL_UI: u8 = 2;
 
-const PUBLISHING_REGISTRY_VERSION: u64 = 1;
-const PUBLISHING_RECORD_VERSION: u64 = 1;
+const VERSION_STATUS_VALID: u8 = 0;
 
-public struct PaperRegistry has key {
+public struct PaperProofRoot has key {
     id: UID,
     version: u64,
-    current_epoch: u64,
-    epoch_counter: u64,
-    next_record_number: u64,
-    code_prefix: String,
-    max_file_size: u64,
-    min_page_count: u64,
-    max_page_count: u64,
-    max_keywords: u64,
-    max_authors: u64,
     paused: bool,
-    code_to_record: Table<String, ID>,
+    governance_vault_id: ID,
+    fee_manager_id: ID,
+    type_registry_id: ID,
 }
 
-public struct PaperRecord has key {
+public struct TypeInfo has store {
+    artifact_type: u8,
+    index_object_id: ID,
+    enabled: bool,
+    schema_version: u64,
+    min_protocol_version: u64,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+public struct TypeRegistry has key {
     id: UID,
     version: u64,
-    paper_code: String,
-    paper_epoch: u64,
-    epoch_seq: u64,
-    record_number: u64,
-    reserver: address,
+    registry_id: ID,
+    types: Table<u8, TypeInfo>,
+}
+
+public struct TypeIndex has key {
+    id: UID,
+    version: u64,
+    registry_id: ID,
+    artifact_type: u8,
+    next_number: u64,
+    code_to_series: Table<String, ID>,
+}
+
+public struct ArtifactSeries has key {
+    id: UID,
+    version: u64,
+    artifact_type: u8,
+    artifact_code: String,
     owner: address,
+    current_version: u64,
+    current_version_id: ID,
+    version_ids: vector<ID>,
+    comments_tree_id: ID,
     status: u8,
     ui_status: u8,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+public struct CommonArtifactHeader has store {
+    series_id: ID,
+    artifact_type: u8,
+    version: u64,
+    previous_version_id: Option<ID>,
+    author: address,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    status: u8,
+    created_at_ms: u64,
+}
+
+public struct PreprintVersionRecord has key {
+    id: UID,
+    header: CommonArtifactHeader,
     title: String,
     abstract_text: String,
-    keywords: vector<String>,
     authors: vector<String>,
+    keywords: vector<String>,
     field: String,
     license: String,
-    current_version: u64,
-    version_ids: vector<ID>,
-    comments_tree_id: option::Option<ID>,
-    reserved_at_ms: u64,
-    published_at_ms: u64,
-    updated_at_ms: u64,
-}
-
-public struct PaperVersion has key {
-    id: UID,
-    paper_record_id: ID,
-    paper_code: String,
-    version_number: u64,
-    walrus_blob_id: String,
-    walrus_blob_object_id: String,
-    file_hash: String,
-    file_size: u64,
     page_count: u64,
-    storage_end_epoch: u64,
-    is_shared_blob: bool,
-    title_snapshot: String,
-    abstract_snapshot: String,
-    keywords_snapshot: vector<String>,
-    authors_snapshot: vector<String>,
-    field_snapshot: String,
-    license_snapshot: String,
-    tx_sender: address,
-    created_at_ms: u64,
 }
 
-public struct CodeReserved has copy, drop {
-    paper_record_id: ID,
-    paper_code: String,
-    paper_epoch: u64,
-    epoch_seq: u64,
-    record_number: u64,
-    reserver: address,
-    reserved_at_ms: u64,
-}
-
-public struct PaperFinalized has copy, drop {
-    paper_record_id: ID,
-    version_id: ID,
-    paper_code: String,
-    paper_epoch: u64,
-    epoch_seq: u64,
-    record_number: u64,
-    owner: address,
+public struct BlogPostVersionRecord has key {
+    id: UID,
+    header: CommonArtifactHeader,
     title: String,
+    summary: String,
+    tags: vector<String>,
+    language: String,
+}
+
+public struct TechnicalReportVersionRecord has key {
+    id: UID,
+    header: CommonArtifactHeader,
+    title: String,
+    abstract_text: String,
     authors: vector<String>,
-    field: String,
+    organization: String,
+    report_number: String,
     keywords: vector<String>,
-    walrus_blob_id: String,
-    walrus_blob_object_id: String,
-    file_hash: String,
-    comments_tree_id: ID,
-    published_at_ms: u64,
+    license: String,
 }
 
-public struct PaperVersionAdded has copy, drop {
-    paper_record_id: ID,
-    version_id: ID,
-    paper_code: String,
-    version_number: u64,
-    submitter: address,
+public struct DatasetVersionRecord has key {
+    id: UID,
+    header: CommonArtifactHeader,
     title: String,
+    description: String,
+    format: String,
+    file_count: u64,
+    size_bytes: u64,
+    license: String,
+    keywords: vector<String>,
+}
+
+public struct SoftwareReleaseVersionRecord has key {
+    id: UID,
+    header: CommonArtifactHeader,
+    project_name: String,
+    version_name: String,
+    source_hash: String,
+    package_hash: String,
+    changelog: String,
+    license: String,
+    repository_url: String,
+}
+
+public struct GenericFileVersionRecord has key {
+    id: UID,
+    header: CommonArtifactHeader,
+    title: String,
+    description: String,
+    filename: String,
+    file_size: u64,
+    license: String,
+}
+
+public struct ArtifactPublishedEvent has copy, drop {
+    series_id: ID,
+    version_id: ID,
+    artifact_type: u8,
+    artifact_code: String,
+    author: address,
+    content_hash: String,
     walrus_blob_id: String,
-    walrus_blob_object_id: String,
-    file_hash: String,
+    content_type: String,
+    version: u64,
+    comments_tree_id: ID,
     created_at_ms: u64,
 }
 
-public struct StorageExtended has copy, drop {
-    paper_record_id: ID,
-    version_id: ID,
-    paper_code: String,
-    old_storage_end_epoch: u64,
-    new_storage_end_epoch: u64,
-    extender: address,
-    updated_at_ms: u64,
+public struct ArtifactVersionAddedEvent has copy, drop {
+    series_id: ID,
+    old_version_id: ID,
+    new_version_id: ID,
+    artifact_type: u8,
+    artifact_code: String,
+    author: address,
+    content_hash: String,
+    walrus_blob_id: String,
+    content_type: String,
+    version: u64,
+    created_at_ms: u64,
 }
 
-public struct PaperOwnerTransferred has copy, drop {
-    paper_record_id: ID,
-    paper_code: String,
-    old_owner: address,
-    new_owner: address,
-    timestamp_ms: u64,
-}
-
-public struct CommentsTreeBound has copy, drop {
-    paper_record_id: ID,
-    paper_code: String,
-    comments_tree_id: ID,
-    bound_at_ms: u64,
-}
-
-public struct PaperUiStatusChanged has copy, drop {
-    paper_record_id: ID,
-    paper_code: String,
+public struct ArtifactStatusChangedEvent has copy, drop {
+    series_id: ID,
+    artifact_type: u8,
     changed_by: address,
-    ui_status: u8,
-    timestamp_ms: u64,
+    old_status: u8,
+    new_status: u8,
+    changed_at_ms: u64,
 }
 
-public struct ConfigUpdated has copy, drop {
-    admin: address,
-    timestamp_ms: u64,
+public struct ArtifactTypeStatusChangedEvent has copy, drop {
+    registry_id: ID,
+    artifact_type: u8,
+    changed_by: address,
+    old_enabled: bool,
+    enabled: bool,
+    changed_at_ms: u64,
+}
+
+public struct ProtocolPausedChangedEvent has copy, drop {
+    root_id: ID,
+    changed_by: address,
+    old_paused: bool,
+    new_paused: bool,
+    changed_at_ms: u64,
+}
+
+public struct PaperProofRootCreatedEvent has copy, drop {
+    root_id: ID,
+    created_by: address,
+    governance_vault_id: ID,
+    fee_manager_id: ID,
+    type_registry_id: ID,
+}
+
+public struct TypeRegistryCreatedEvent has copy, drop {
+    root_id: ID,
+    type_registry_id: ID,
+    created_by: address,
+}
+
+public struct TypeIndexCreatedEvent has copy, drop {
+    root_id: ID,
+    artifact_type: u8,
+    type_index_id: ID,
+    created_by: address,
 }
 
 fun init(ctx: &mut TxContext) {
-    let registry = PaperRegistry {
-        id: object::new(ctx),
-        version: PUBLISHING_REGISTRY_VERSION,
-        current_epoch: 0,
-        epoch_counter: 0,
-        next_record_number: 1,
-        code_prefix: string::utf8(b"OriginPaper"),
-        max_file_size: 50_000_000,
-        min_page_count: 2,
-        max_page_count: 200,
-        max_keywords: 10,
-        max_authors: 20,
-        paused: false,
-        code_to_record: table::new<String, ID>(ctx),
-    };
-
+    let root_uid = object::new(ctx);
+    let root_id = *root_uid.as_inner();
     let sender = tx_context::sender(ctx);
-    let (vault, operator_permit) = governance::new_vault(
-        object::id(&registry),
-        sender,
-        sender,
-        ctx,
-    );
-    transfer::share_object(registry);
+    let now = 0;
+
+    let preprint_index = new_index(root_id, artifact_types::preprint(), ctx);
+    let blog_post_index = new_index(root_id, artifact_types::blog_post(), ctx);
+    let technical_report_index = new_index(root_id, artifact_types::technical_report(), ctx);
+    let dataset_index = new_index(root_id, artifact_types::dataset(), ctx);
+    let software_release_index = new_index(root_id, artifact_types::software_release(), ctx);
+    let generic_file_index = new_index(root_id, artifact_types::generic_file(), ctx);
+
+    let preprint_index_id = object::id(&preprint_index);
+    let blog_post_index_id = object::id(&blog_post_index);
+    let technical_report_index_id = object::id(&technical_report_index);
+    let dataset_index_id = object::id(&dataset_index);
+    let software_release_index_id = object::id(&software_release_index);
+    let generic_file_index_id = object::id(&generic_file_index);
+
+    let mut type_registry = TypeRegistry {
+        id: object::new(ctx),
+        version: TYPE_REGISTRY_VERSION,
+        registry_id: root_id,
+        types: table::new(ctx),
+    };
+    add_type_info(&mut type_registry, artifact_types::preprint(), preprint_index_id, now);
+    add_type_info(&mut type_registry, artifact_types::blog_post(), blog_post_index_id, now);
+    add_type_info(&mut type_registry, artifact_types::technical_report(), technical_report_index_id, now);
+    add_type_info(&mut type_registry, artifact_types::dataset(), dataset_index_id, now);
+    add_type_info(&mut type_registry, artifact_types::software_release(), software_release_index_id, now);
+    add_type_info(&mut type_registry, artifact_types::generic_file(), generic_file_index_id, now);
+
+    let fee_manager = governance::new_fee_manager(root_id, ctx);
+    let (vault, operator_permit) = governance::new_vault(root_id, sender, sender, ctx);
+
+    let root = PaperProofRoot {
+        id: root_uid,
+        version: PAPERPROOF_ROOT_VERSION,
+        paused: false,
+        governance_vault_id: object::id(&vault),
+        fee_manager_id: governance::fee_manager_id(&fee_manager),
+        type_registry_id: object::id(&type_registry),
+    };
+    let governance_vault_id = root.governance_vault_id;
+    let fee_manager_id = root.fee_manager_id;
+    let type_registry_id = root.type_registry_id;
+
+    event::emit(PaperProofRootCreatedEvent {
+        root_id,
+        created_by: sender,
+        governance_vault_id,
+        fee_manager_id,
+        type_registry_id,
+    });
+    event::emit(TypeRegistryCreatedEvent { root_id, type_registry_id, created_by: sender });
+    event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::preprint(), type_index_id: preprint_index_id, created_by: sender });
+    event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::blog_post(), type_index_id: blog_post_index_id, created_by: sender });
+    event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::technical_report(), type_index_id: technical_report_index_id, created_by: sender });
+    event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::dataset(), type_index_id: dataset_index_id, created_by: sender });
+    event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::software_release(), type_index_id: software_release_index_id, created_by: sender });
+    event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::generic_file(), type_index_id: generic_file_index_id, created_by: sender });
+
+    transfer::share_object(root);
+    transfer::share_object(preprint_index);
+    transfer::share_object(blog_post_index);
+    transfer::share_object(technical_report_index);
+    transfer::share_object(dataset_index);
+    transfer::share_object(software_release_index);
+    transfer::share_object(generic_file_index);
+    transfer::share_object(type_registry);
+    governance::share_fee_manager(fee_manager);
     governance::share_vault(vault);
     transfer::public_transfer(operator_permit, sender);
 }
 
-public fun reserve_code(
-    registry: &mut PaperRegistry,
-    clock_ref: &Clock,
-    ctx: &mut TxContext,
-) {
-    assert_current_registry(registry);
-    assert!(!registry.paused, E_PAUSED);
-
-    let sender = tx_context::sender(ctx);
-    let now = clock::timestamp_ms(clock_ref);
-    let epoch = tx_context::epoch(ctx);
-
-    assert!(epoch >= registry.current_epoch, E_EPOCH_REGRESSION);
-
-    if (epoch != registry.current_epoch) {
-        registry.current_epoch = epoch;
-        registry.epoch_counter = 0;
-    };
-
-    registry.epoch_counter = registry.epoch_counter + 1;
-    let epoch_seq = registry.epoch_counter;
-
-    let record_number = registry.next_record_number;
-    registry.next_record_number = record_number + 1;
-
-    let paper_code = make_paper_code(&registry.code_prefix, epoch, epoch_seq);
-
-    let record = PaperRecord {
-        id: object::new(ctx),
-        version: PUBLISHING_RECORD_VERSION,
-        paper_code,
-        paper_epoch: epoch,
-        epoch_seq,
-        record_number,
-        reserver: sender,
-        owner: sender,
-        status: STATUS_RESERVED,
-        ui_status: UI_NORMAL,
-        title: string::utf8(b""),
-        abstract_text: string::utf8(b""),
-        keywords: vector::empty<String>(),
-        authors: vector::empty<String>(),
-        field: string::utf8(b""),
-        license: string::utf8(b""),
-        current_version: 0,
-        version_ids: vector::empty<ID>(),
-        comments_tree_id: option::none<ID>(),
-        reserved_at_ms: now,
-        published_at_ms: 0,
-        updated_at_ms: now,
-    };
-
-    let record_id = object::id(&record);
-
-    table::add<String, ID>(
-        &mut registry.code_to_record,
-        record.paper_code,
-        record_id,
-    );
-
-    event::emit(CodeReserved {
-        paper_record_id: record_id,
-        paper_code: record.paper_code,
-        paper_epoch: epoch,
-        epoch_seq,
-        record_number,
-        reserver: sender,
-        reserved_at_ms: now,
-    });
-
-    transfer::share_object(record);
-}
-
-public fun finalize_paper(
-    registry: &PaperRegistry,
-    record: &mut PaperRecord,
+public fun publish_preprint(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
-
+    fee_manager: &FeeManager,
     title: String,
     abstract_text: String,
-    keywords: vector<String>,
     authors: vector<String>,
+    keywords: vector<String>,
     field: String,
     license: String,
-
+    page_count: u64,
+    content_hash: String,
     walrus_blob_id: String,
     walrus_blob_object_id: String,
-    file_hash: String,
-    file_size: u64,
-    page_count: u64,
-    storage_end_epoch: u64,
-    is_shared_blob: bool,
-
+    content_type: String,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_current_registry(registry);
-    assert_current_record(record);
-    governance::assert_current_vault(governance_vault);
-    assert!(!registry.paused, E_PAUSED);
-    assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
-    assert_record_in_registry(registry, record);
-
-    let sender = tx_context::sender(ctx);
-    assert!(sender == record.reserver, E_NOT_RESERVER);
-    assert!(record.status == STATUS_RESERVED, E_ALREADY_PUBLISHED);
-
-    validate_metadata(registry, &title, &abstract_text, &keywords, &authors);
-    validate_file(
-        registry,
-        &walrus_blob_id,
-        &walrus_blob_object_id,
-        &file_hash,
-        file_size,
-        page_count,
-    );
-    governance::collect_publishing_fee(governance_vault, payment, ctx);
-
-    let now = clock::timestamp_ms(clock_ref);
-
-    record.title = title;
-    record.abstract_text = abstract_text;
-    record.keywords = keywords;
-    record.authors = authors;
-    record.field = field;
-    record.license = license;
-    record.status = STATUS_PUBLISHED;
-    record.current_version = 1;
-    record.published_at_ms = now;
-    record.updated_at_ms = now;
-
-    let record_id = object::id(record);
-
-    let comments_tree = comments::new_tree(
-        object::id(registry),
-        record.owner,
-        record.paper_code,
-        record_id,
+    validate_title(&title);
+    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_authors(&authors);
+    validate_keywords(&keywords);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let (series, header, comments_tree) = publish_common(
+        root,
+        type_registry,
+        index,
+        governance_vault,
+        fee_manager,
+        artifact_types::preprint(),
+        version_id,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        payment,
         clock_ref,
         ctx,
     );
-    let comments_tree_id = comments::tree_id(&comments_tree);
-    record.comments_tree_id = option::some<ID>(comments_tree_id);
-
-    let version = PaperVersion {
-        id: object::new(ctx),
-        paper_record_id: record_id,
-        paper_code: record.paper_code,
-        version_number: 1,
-        walrus_blob_id,
-        walrus_blob_object_id,
-        file_hash,
-        file_size,
+    let record = PreprintVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        abstract_text,
+        authors,
+        keywords,
+        field,
+        license,
         page_count,
-        storage_end_epoch,
-        is_shared_blob,
-        title_snapshot: record.title,
-        abstract_snapshot: record.abstract_text,
-        keywords_snapshot: record.keywords,
-        authors_snapshot: record.authors,
-        field_snapshot: record.field,
-        license_snapshot: record.license,
-        tx_sender: sender,
-        created_at_ms: now,
     };
-
-    let version_id = object::id(&version);
-    vector::push_back(&mut record.version_ids, version_id);
-
-    event::emit(PaperFinalized {
-        paper_record_id: record_id,
-        version_id,
-        paper_code: record.paper_code,
-        paper_epoch: record.paper_epoch,
-        epoch_seq: record.epoch_seq,
-        record_number: record.record_number,
-        owner: record.owner,
-        title: record.title,
-        authors: record.authors,
-        field: record.field,
-        keywords: record.keywords,
-        walrus_blob_id: version.walrus_blob_id,
-        walrus_blob_object_id: version.walrus_blob_object_id,
-        file_hash: version.file_hash,
-        comments_tree_id,
-        published_at_ms: now,
-    });
-    event::emit(CommentsTreeBound {
-        paper_record_id: record_id,
-        paper_code: record.paper_code,
-        comments_tree_id,
-        bound_at_ms: now,
-    });
-
+    transfer::share_object(series);
     comments::share_tree(comments_tree);
-    transfer::share_object(version);
+    transfer::share_object(record);
 }
 
-public fun add_version(
-    registry: &PaperRegistry,
-    record: &mut PaperRecord,
+public fun publish_blog_post(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
-
+    fee_manager: &FeeManager,
     title: String,
-    abstract_text: String,
-    keywords: vector<String>,
-    authors: vector<String>,
-    field: String,
-    license: String,
-
+    summary: String,
+    tags: vector<String>,
+    language: String,
+    content_hash: String,
     walrus_blob_id: String,
     walrus_blob_object_id: String,
-    file_hash: String,
-    file_size: u64,
-    page_count: u64,
-    storage_end_epoch: u64,
-    is_shared_blob: bool,
-
+    content_type: String,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_current_registry(registry);
-    assert_current_record(record);
-    governance::assert_current_vault(governance_vault);
-    assert!(!registry.paused, E_PAUSED);
-    assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
-    assert_record_in_registry(registry, record);
-
-    let sender = tx_context::sender(ctx);
-    assert!(record.status == STATUS_PUBLISHED, E_NOT_PUBLISHED);
-    assert!(sender == record.owner, E_NOT_OWNER);
-
-    validate_metadata(registry, &title, &abstract_text, &keywords, &authors);
-    validate_file(
-        registry,
-        &walrus_blob_id,
-        &walrus_blob_object_id,
-        &file_hash,
-        file_size,
-        page_count,
-    );
-    governance::collect_publishing_fee(governance_vault, payment, ctx);
-
-    let now = clock::timestamp_ms(clock_ref);
-    let new_version_number = record.current_version + 1;
-
-    record.title = title;
-    record.abstract_text = abstract_text;
-    record.keywords = keywords;
-    record.authors = authors;
-    record.field = field;
-    record.license = license;
-    record.current_version = new_version_number;
-    record.updated_at_ms = now;
-
-    let record_id = object::id(record);
-
-    let version = PaperVersion {
-        id: object::new(ctx),
-        paper_record_id: record_id,
-        paper_code: record.paper_code,
-        version_number: new_version_number,
+    validate_title(&title);
+    assert!(string::length(&summary) > 0, E_EMPTY_DESCRIPTION);
+    validate_tags(&tags);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let (series, header, comments_tree) = publish_common(
+        root,
+        type_registry,
+        index,
+        governance_vault,
+        fee_manager,
+        artifact_types::blog_post(),
+        version_id,
+        content_hash,
         walrus_blob_id,
         walrus_blob_object_id,
-        file_hash,
-        file_size,
-        page_count,
-        storage_end_epoch,
-        is_shared_blob,
-        title_snapshot: record.title,
-        abstract_snapshot: record.abstract_text,
-        keywords_snapshot: record.keywords,
-        authors_snapshot: record.authors,
-        field_snapshot: record.field,
-        license_snapshot: record.license,
-        tx_sender: sender,
-        created_at_ms: now,
-    };
-
-    let version_id = object::id(&version);
-    vector::push_back(&mut record.version_ids, version_id);
-
-    event::emit(PaperVersionAdded {
-        paper_record_id: record_id,
-        version_id,
-        paper_code: record.paper_code,
-        version_number: new_version_number,
-        submitter: sender,
-        title: record.title,
-        walrus_blob_id: version.walrus_blob_id,
-        walrus_blob_object_id: version.walrus_blob_object_id,
-        file_hash: version.file_hash,
-        created_at_ms: now,
-    });
-
-    transfer::share_object(version);
+        content_type,
+        payment,
+        clock_ref,
+        ctx,
+    );
+    let record = BlogPostVersionRecord { id: version_uid, header, title, summary, tags, language };
+    transfer::share_object(series);
+    comments::share_tree(comments_tree);
+    transfer::share_object(record);
 }
 
-public fun transfer_paper_owner(
-    record: &mut PaperRecord,
+public fun publish_technical_report(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &mut TypeIndex,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    abstract_text: String,
+    authors: vector<String>,
+    organization: String,
+    report_number: String,
+    keywords: vector<String>,
+    license: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_authors(&authors);
+    validate_keywords(&keywords);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let (series, header, comments_tree) = publish_common(
+        root,
+        type_registry,
+        index,
+        governance_vault,
+        fee_manager,
+        artifact_types::technical_report(),
+        version_id,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        payment,
+        clock_ref,
+        ctx,
+    );
+    let record = TechnicalReportVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        abstract_text,
+        authors,
+        organization,
+        report_number,
+        keywords,
+        license,
+    };
+    transfer::share_object(series);
+    comments::share_tree(comments_tree);
+    transfer::share_object(record);
+}
+
+public fun publish_dataset(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &mut TypeIndex,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    description: String,
+    format: String,
+    file_count: u64,
+    size_bytes: u64,
+    license: String,
+    keywords: vector<String>,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
+    validate_keywords(&keywords);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let (series, header, comments_tree) = publish_common(
+        root,
+        type_registry,
+        index,
+        governance_vault,
+        fee_manager,
+        artifact_types::dataset(),
+        version_id,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        payment,
+        clock_ref,
+        ctx,
+    );
+    let record = DatasetVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        description,
+        format,
+        file_count,
+        size_bytes,
+        license,
+        keywords,
+    };
+    transfer::share_object(series);
+    comments::share_tree(comments_tree);
+    transfer::share_object(record);
+}
+
+public fun publish_software_release(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &mut TypeIndex,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    project_name: String,
+    version_name: String,
+    source_hash: String,
+    package_hash: String,
+    changelog: String,
+    license: String,
+    repository_url: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&project_name);
+    assert!(string::length(&version_name) > 0, E_EMPTY_DESCRIPTION);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let (series, header, comments_tree) = publish_common(
+        root,
+        type_registry,
+        index,
+        governance_vault,
+        fee_manager,
+        artifact_types::software_release(),
+        version_id,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        payment,
+        clock_ref,
+        ctx,
+    );
+    let record = SoftwareReleaseVersionRecord {
+        id: version_uid,
+        header,
+        project_name,
+        version_name,
+        source_hash,
+        package_hash,
+        changelog,
+        license,
+        repository_url,
+    };
+    transfer::share_object(series);
+    comments::share_tree(comments_tree);
+    transfer::share_object(record);
+}
+
+public fun publish_generic_file(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &mut TypeIndex,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    description: String,
+    filename: String,
+    file_size: u64,
+    license: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
+    assert!(string::length(&filename) > 0, E_EMPTY_DESCRIPTION);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let (series, header, comments_tree) = publish_common(
+        root,
+        type_registry,
+        index,
+        governance_vault,
+        fee_manager,
+        artifact_types::generic_file(),
+        version_id,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        payment,
+        clock_ref,
+        ctx,
+    );
+    let record = GenericFileVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        description,
+        filename,
+        file_size,
+        license,
+    };
+    transfer::share_object(series);
+    comments::share_tree(comments_tree);
+    transfer::share_object(record);
+}
+
+public fun add_preprint_version(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    abstract_text: String,
+    authors: vector<String>,
+    keywords: vector<String>,
+    field: String,
+    license: String,
+    page_count: u64,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_authors(&authors);
+    validate_keywords(&keywords);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common(
+        root, series, governance_vault, fee_manager, artifact_types::preprint(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+    );
+    transfer::share_object(PreprintVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        abstract_text,
+        authors,
+        keywords,
+        field,
+        license,
+        page_count,
+    });
+}
+
+public fun add_blog_post_version(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    summary: String,
+    tags: vector<String>,
+    language: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&summary) > 0, E_EMPTY_DESCRIPTION);
+    validate_tags(&tags);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common(
+        root, series, governance_vault, fee_manager, artifact_types::blog_post(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+    );
+    transfer::share_object(BlogPostVersionRecord { id: version_uid, header, title, summary, tags, language });
+}
+
+public fun add_technical_report_version(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    abstract_text: String,
+    authors: vector<String>,
+    organization: String,
+    report_number: String,
+    keywords: vector<String>,
+    license: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_authors(&authors);
+    validate_keywords(&keywords);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common(
+        root, series, governance_vault, fee_manager, artifact_types::technical_report(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+    );
+    transfer::share_object(TechnicalReportVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        abstract_text,
+        authors,
+        organization,
+        report_number,
+        keywords,
+        license,
+    });
+}
+
+public fun add_dataset_version(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    description: String,
+    format: String,
+    file_count: u64,
+    size_bytes: u64,
+    license: String,
+    keywords: vector<String>,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
+    validate_keywords(&keywords);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common(
+        root, series, governance_vault, fee_manager, artifact_types::dataset(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+    );
+    transfer::share_object(DatasetVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        description,
+        format,
+        file_count,
+        size_bytes,
+        license,
+        keywords,
+    });
+}
+
+public fun add_software_release_version(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    project_name: String,
+    version_name: String,
+    source_hash: String,
+    package_hash: String,
+    changelog: String,
+    license: String,
+    repository_url: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&project_name);
+    assert!(string::length(&version_name) > 0, E_EMPTY_DESCRIPTION);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common(
+        root, series, governance_vault, fee_manager, artifact_types::software_release(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+    );
+    transfer::share_object(SoftwareReleaseVersionRecord {
+        id: version_uid,
+        header,
+        project_name,
+        version_name,
+        source_hash,
+        package_hash,
+        changelog,
+        license,
+        repository_url,
+    });
+}
+
+public fun add_generic_file_version(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    description: String,
+    filename: String,
+    file_size: u64,
+    license: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
+    assert!(string::length(&filename) > 0, E_EMPTY_DESCRIPTION);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common(
+        root, series, governance_vault, fee_manager, artifact_types::generic_file(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+    );
+    transfer::share_object(GenericFileVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        description,
+        filename,
+        file_size,
+        license,
+    });
+}
+
+public fun transfer_artifact_owner(
+    series: &mut ArtifactSeries,
     comments_tree: &mut CommentsTree,
     new_owner: address,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_current_record(record);
-    let sender = tx_context::sender(ctx);
-    assert!(sender == record.owner, E_NOT_OWNER);
-    assert!(new_owner != @0x0, E_INVALID_NEW_OWNER);
-    assert!(record.status == STATUS_PUBLISHED, E_NOT_PUBLISHED);
-    assert!(comments::paper_object_id(comments_tree) == object::id(record), E_INVALID_COMMENTS_TREE);
-    assert!(comments::owner(comments_tree) == record.owner, E_INVALID_COMMENTS_TREE);
-
-    let old_owner = record.owner;
+    assert_current_series(series);
+    assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
+    assert!(comments::tree_id(comments_tree) == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_series_id(comments_tree) == object::id(series), E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_artifact_type(comments_tree) == series.artifact_type, E_INVALID_COMMENTS_TREE);
+    assert!(comments::owner(comments_tree) == series.owner, E_INVALID_COMMENTS_TREE);
     comments::transfer_tree_owner(comments_tree, new_owner, ctx);
-    record.owner = new_owner;
-    record.updated_at_ms = clock::timestamp_ms(clock_ref);
-
-    event::emit(PaperOwnerTransferred {
-        paper_record_id: object::id(record),
-        paper_code: record.paper_code,
-        old_owner,
-        new_owner,
-        timestamp_ms: record.updated_at_ms,
-    });
-}
-
-public fun record_storage_extension(
-    record: &PaperRecord,
-    version: &mut PaperVersion,
-    new_storage_end_epoch: u64,
-    clock_ref: &Clock,
-    ctx: &mut TxContext,
-) {
-    assert_current_record(record);
-    assert!(record.status == STATUS_PUBLISHED, E_NOT_PUBLISHED);
-    assert!(version.paper_record_id == object::id(record), E_INVALID_STATUS);
-    assert!(new_storage_end_epoch > version.storage_end_epoch, E_STORAGE_NOT_EXTENDED);
-
-    let old = version.storage_end_epoch;
-    version.storage_end_epoch = new_storage_end_epoch;
-
-    event::emit(StorageExtended {
-        paper_record_id: object::id(record),
-        version_id: object::id(version),
-        paper_code: record.paper_code,
-        old_storage_end_epoch: old,
-        new_storage_end_epoch,
-        extender: tx_context::sender(ctx),
-        updated_at_ms: clock::timestamp_ms(clock_ref),
-    });
-}
-
-public fun extend_walrus_storage_and_record(
-    _registry: &PaperRegistry,
-    _record: &PaperRecord,
-    _version: &mut PaperVersion,
-    _epochs_extended: u64,
-    _clock_ref: &Clock,
-    _ctx: &mut TxContext,
-) {
-    assert_current_registry(_registry);
-    assert_current_record(_record);
-    abort E_WALRUS_EXTENSION_NOT_IMPLEMENTED
+    series.owner = new_owner;
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
 }
 
 public fun set_paused(
-    registry: &mut PaperRegistry,
+    root: &mut PaperProofRoot,
     governance_vault: &GovernanceVault,
     operator_permit: &OperatorPermit,
     paused: bool,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_current_registry(registry);
-    governance::assert_current_vault(governance_vault);
-    assert_admin(
-        registry,
-        governance_vault,
-        operator_permit,
-        tx_context::sender(ctx),
-    );
-    registry.paused = paused;
-
-    event::emit(ConfigUpdated {
-        admin: tx_context::sender(ctx),
-        timestamp_ms: clock::timestamp_ms(clock_ref),
-    });
-}
-
-public fun update_limits(
-    registry: &mut PaperRegistry,
-    governance_vault: &GovernanceVault,
-    operator_permit: &OperatorPermit,
-    max_file_size: u64,
-    min_page_count: u64,
-    max_page_count: u64,
-    max_keywords: u64,
-    max_authors: u64,
-    clock_ref: &Clock,
-    ctx: &mut TxContext,
-) {
-    assert_current_registry(registry);
-    governance::assert_current_vault(governance_vault);
-    assert_admin(
-        registry,
-        governance_vault,
-        operator_permit,
-        tx_context::sender(ctx),
-    );
-
-    registry.max_file_size = max_file_size;
-    registry.min_page_count = min_page_count;
-    registry.max_page_count = max_page_count;
-    registry.max_keywords = max_keywords;
-    registry.max_authors = max_authors;
-
-    event::emit(ConfigUpdated {
-        admin: tx_context::sender(ctx),
-        timestamp_ms: clock::timestamp_ms(clock_ref),
-    });
-}
-
-public fun set_ui_status(
-    registry: &PaperRegistry,
-    governance_vault: &GovernanceVault,
-    operator_permit: &OperatorPermit,
-    record: &mut PaperRecord,
-    ui_status: u8,
-    clock_ref: &Clock,
-    ctx: &mut TxContext,
-) {
-    assert_current_registry(registry);
-    assert_current_record(record);
-    governance::assert_current_vault(governance_vault);
-    assert_admin(
-        registry,
-        governance_vault,
-        operator_permit,
-        tx_context::sender(ctx),
-    );
-    assert!(
-        ui_status == UI_NORMAL ||
-        ui_status == UI_FLAGGED ||
-        ui_status == UI_HIDDEN_IN_OFFICIAL_UI,
-        E_INVALID_STATUS,
-    );
-
-    record.ui_status = ui_status;
-    record.updated_at_ms = clock::timestamp_ms(clock_ref);
-    event::emit(PaperUiStatusChanged {
-        paper_record_id: object::id(record),
-        paper_code: record.paper_code,
+    assert_current_root(root);
+    assert_admin(root, governance_vault, operator_permit, tx_context::sender(ctx));
+    let old_paused = root.paused;
+    root.paused = paused;
+    event::emit(ProtocolPausedChangedEvent {
+        root_id: object::id(root),
         changed_by: tx_context::sender(ctx),
-        ui_status,
-        timestamp_ms: record.updated_at_ms,
+        old_paused,
+        new_paused: paused,
+        changed_at_ms: clock::timestamp_ms(clock_ref),
     });
 }
 
-public fun get_record_id_by_code(
-    registry: &PaperRegistry,
-    paper_code: String,
-): ID {
-    *table::borrow<String, ID>(&registry.code_to_record, paper_code)
-}
-
-public fun paper_code(record: &PaperRecord): String {
-    record.paper_code
-}
-
-public fun registry_paused(registry: &PaperRegistry): bool {
-    registry.paused
-}
-
-public fun registry_limits(registry: &PaperRegistry): (u64, u64, u64, u64, u64) {
-    (
-        registry.max_file_size,
-        registry.min_page_count,
-        registry.max_page_count,
-        registry.max_keywords,
-        registry.max_authors,
-    )
-}
-
-public fun record_timestamps(record: &PaperRecord): (u64, u64, u64) {
-    (record.reserved_at_ms, record.published_at_ms, record.updated_at_ms)
-}
-
-public fun registry_version(registry: &PaperRegistry): u64 {
-    registry.version
-}
-
-public fun paper_record_version(record: &PaperRecord): u64 {
-    record.version
-}
-
-public fun current_registry_version(): u64 {
-    PUBLISHING_REGISTRY_VERSION
-}
-
-public fun current_paper_record_version(): u64 {
-    PUBLISHING_RECORD_VERSION
-}
-
-public fun paper_epoch(record: &PaperRecord): u64 {
-    record.paper_epoch
-}
-
-public fun epoch_seq(record: &PaperRecord): u64 {
-    record.epoch_seq
-}
-
-public fun record_status(record: &PaperRecord): u8 {
-    record.status
-}
-
-public fun ui_status(record: &PaperRecord): u8 {
-    record.ui_status
-}
-
-public fun paper_owner(record: &PaperRecord): address {
-    record.owner
-}
-
-public fun current_version(record: &PaperRecord): u64 {
-    record.current_version
-}
-
-public fun version_count(record: &PaperRecord): u64 {
-    vector::length(&record.version_ids)
-}
-
-public fun version_id_at(record: &PaperRecord, index: u64): ID {
-    *vector::borrow(&record.version_ids, index)
-}
-
-public fun comments_tree_id(record: &PaperRecord): &option::Option<ID> {
-    &record.comments_tree_id
-}
-
-public fun migrate_registry(
-    registry: &mut PaperRegistry,
+public fun execute_artifact_type_enabled_proposal(
+    root: &PaperProofRoot,
+    type_registry: &mut TypeRegistry,
     governance_vault: &GovernanceVault,
-    ctx: &TxContext,
+    governance_config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
 ) {
-    governance::assert_current_vault(governance_vault);
-    assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
-    governance::assert_upgrade_authority(governance_vault, tx_context::sender(ctx));
-    migrate_registry_version(registry);
+    assert_current_root(root);
+    assert_current_registry(type_registry);
+    assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
+    assert!(root.governance_vault_id == object::id(governance_vault), E_INVALID_GOVERNANCE_VAULT);
+
+    let ticket = voting::consume_executable_proposal_action(
+        governance_config,
+        proposal,
+        governance_vault,
+        object::id(root),
+        voting::action_set_artifact_type_enabled(),
+        ctx,
+    );
+    let (ticket_registry_id, artifact_type_payload, enabled_payload, _) =
+        governance::unpack_artifact_type_enabled_ticket(ticket);
+    assert!(ticket_registry_id == object::id(root), E_INVALID_GOVERNANCE_ACTION);
+    let artifact_type = artifact_type_payload as u8;
+    assert!(enabled_payload == 0 || enabled_payload == 1, E_INVALID_GOVERNANCE_ACTION);
+    apply_artifact_type_enabled(type_registry, artifact_type, enabled_payload == 1, tx_context::sender(ctx), clock_ref);
 }
 
-public fun migrate_record(
-    registry: &PaperRegistry,
-    record: &mut PaperRecord,
+public fun execute_artifact_fee_level_proposal(
+    root: &PaperProofRoot,
     governance_vault: &GovernanceVault,
-    ctx: &TxContext,
+    fee_manager: &mut FeeManager,
+    governance_config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+    ctx: &mut TxContext,
 ) {
-    assert_current_registry(registry);
-    governance::assert_current_vault(governance_vault);
-    assert!(governance::registry_id(governance_vault) == object::id(registry), E_INVALID_GOVERNANCE_VAULT);
-    governance::assert_upgrade_authority(governance_vault, tx_context::sender(ctx));
-    assert_record_in_registry(registry, record);
-    migrate_record_version(record);
+    assert_current_root(root);
+    assert!(root.governance_vault_id == object::id(governance_vault), E_INVALID_GOVERNANCE_VAULT);
+    assert!(root.fee_manager_id == governance::fee_manager_id(fee_manager), E_INVALID_FEE_MANAGER);
+
+    let ticket = voting::consume_executable_proposal_action(
+        governance_config,
+        proposal,
+        governance_vault,
+        object::id(root),
+        voting::action_set_artifact_fee_level(),
+        ctx,
+    );
+    assert_valid_artifact_type(governance::action_ticket_payload_u64_1(&ticket) as u8);
+    governance::apply_artifact_fee_level_from_ticket(governance_vault, fee_manager, ticket);
+}
+
+public fun execute_artifact_type_activation_proposal(
+    root: &PaperProofRoot,
+    type_registry: &mut TypeRegistry,
+    governance_vault: &GovernanceVault,
+    fee_manager: &mut FeeManager,
+    governance_config: &mut GovernanceConfig,
+    proposal: &mut Proposal,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_current_root(root);
+    assert_current_registry(type_registry);
+    assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
+    assert!(root.governance_vault_id == object::id(governance_vault), E_INVALID_GOVERNANCE_VAULT);
+    assert!(root.fee_manager_id == governance::fee_manager_id(fee_manager), E_INVALID_FEE_MANAGER);
+
+    let ticket = voting::consume_executable_proposal_action(
+        governance_config,
+        proposal,
+        governance_vault,
+        object::id(root),
+        voting::action_activate_artifact_type(),
+        ctx,
+    );
+    let artifact_type = governance::action_ticket_payload_u64_1(&ticket) as u8;
+    apply_artifact_type_enabled(type_registry, artifact_type, true, tx_context::sender(ctx), clock_ref);
+    governance::apply_artifact_fee_level_from_ticket(governance_vault, fee_manager, ticket);
+}
+
+public fun set_series_status(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    operator_permit: &OperatorPermit,
+    new_status: u8,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_current_root(root);
+    assert_current_series(series);
+    assert_admin(root, governance_vault, operator_permit, tx_context::sender(ctx));
+    assert_valid_series_status(new_status);
+    let old_status = series.status;
+    series.status = new_status;
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
+    event::emit(ArtifactStatusChangedEvent {
+        series_id: object::id(series),
+        artifact_type: series.artifact_type,
+        changed_by: tx_context::sender(ctx),
+        old_status,
+        new_status,
+        changed_at_ms: series.updated_at_ms,
+    });
+}
+
+public fun get_series_id_by_code(index: &TypeIndex, artifact_code: String): ID {
+    *table::borrow(&index.code_to_series, artifact_code)
+}
+
+public fun root_version(root: &PaperProofRoot): u64 { root.version }
+public fun root_paused(root: &PaperProofRoot): bool { root.paused }
+public fun root_governance_vault_id(root: &PaperProofRoot): ID { root.governance_vault_id }
+public fun root_fee_manager_id(root: &PaperProofRoot): ID { root.fee_manager_id }
+public fun root_type_registry_id(root: &PaperProofRoot): ID { root.type_registry_id }
+
+public fun artifact_type_preprint(): u8 { artifact_types::preprint() }
+public fun artifact_type_blog_post(): u8 { artifact_types::blog_post() }
+public fun artifact_type_technical_report(): u8 { artifact_types::technical_report() }
+public fun artifact_type_dataset(): u8 { artifact_types::dataset() }
+public fun artifact_type_software_release(): u8 { artifact_types::software_release() }
+public fun artifact_type_generic_file(): u8 { artifact_types::generic_file() }
+public fun ui_status_normal(): u8 { UI_NORMAL }
+public fun ui_status_flagged(): u8 { UI_FLAGGED }
+public fun ui_status_hidden_in_official_ui(): u8 { UI_HIDDEN_IN_OFFICIAL_UI }
+
+public fun artifact_type_name(artifact_type: u8): String {
+    artifact_types::name(artifact_type)
+}
+
+public fun type_enabled(type_registry: &TypeRegistry, artifact_type: u8): bool {
+    table::borrow(&type_registry.types, artifact_type).enabled
+}
+
+public fun type_index_object_id(type_registry: &TypeRegistry, artifact_type: u8): ID {
+    table::borrow(&type_registry.types, artifact_type).index_object_id
+}
+
+public fun index_next_number(index: &TypeIndex): u64 { index.next_number }
+public fun index_artifact_type(index: &TypeIndex): u8 { index.artifact_type }
+public fun series_artifact_type(series: &ArtifactSeries): u8 { series.artifact_type }
+public fun series_artifact_code(series: &ArtifactSeries): String { series.artifact_code }
+public fun series_owner(series: &ArtifactSeries): address { series.owner }
+public fun series_current_version(series: &ArtifactSeries): u64 { series.current_version }
+public fun series_current_version_id(series: &ArtifactSeries): ID { series.current_version_id }
+public fun series_comments_tree_id(series: &ArtifactSeries): ID { series.comments_tree_id }
+public fun series_status(series: &ArtifactSeries): u8 { series.status }
+public fun series_ui_status(series: &ArtifactSeries): u8 { series.ui_status }
+public fun version_count(series: &ArtifactSeries): u64 { vector::length(&series.version_ids) }
+public fun version_id_at(series: &ArtifactSeries, index: u64): ID { *vector::borrow(&series.version_ids, index) }
+public fun header_series_id(header: &CommonArtifactHeader): ID { header.series_id }
+public fun header_artifact_type(header: &CommonArtifactHeader): u8 { header.artifact_type }
+public fun header_version(header: &CommonArtifactHeader): u64 { header.version }
+public fun header_content_hash(header: &CommonArtifactHeader): String { header.content_hash }
+
+public fun preprint_header(record: &PreprintVersionRecord): &CommonArtifactHeader { &record.header }
+public fun blog_post_header(record: &BlogPostVersionRecord): &CommonArtifactHeader { &record.header }
+public fun technical_report_header(record: &TechnicalReportVersionRecord): &CommonArtifactHeader { &record.header }
+public fun dataset_header(record: &DatasetVersionRecord): &CommonArtifactHeader { &record.header }
+public fun software_release_header(record: &SoftwareReleaseVersionRecord): &CommonArtifactHeader { &record.header }
+public fun generic_file_header(record: &GenericFileVersionRecord): &CommonArtifactHeader { &record.header }
+
+fun publish_common(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &mut TypeIndex,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    artifact_type: u8,
+    version_id: ID,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+): (ArtifactSeries, CommonArtifactHeader, CommentsTree) {
+    assert_publish_context(root, type_registry, index, governance_vault, fee_manager, artifact_type);
+    validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
+    governance::collect_artifact_fee(governance_vault, fee_manager, artifact_type, payment, ctx);
+
+    let now = clock::timestamp_ms(clock_ref);
+    let sender = tx_context::sender(ctx);
+    let number = index.next_number;
+    index.next_number = number + 1;
+    let artifact_code = make_artifact_code(artifact_type, number);
+
+    let series_uid = object::new(ctx);
+    let series_id = *series_uid.as_inner();
+    table::add(&mut index.code_to_series, artifact_code, series_id);
+
+    let comments_tree = comments::new_tree(
+        object::id(root),
+        sender,
+        artifact_code,
+        series_id,
+        artifact_type,
+        clock_ref,
+        ctx,
+    );
+    let comments_tree_id = comments::tree_id(&comments_tree);
+
+    let mut version_ids = vector::empty<ID>();
+    vector::push_back(&mut version_ids, version_id);
+    let series = ArtifactSeries {
+        id: series_uid,
+        version: ARTIFACT_SERIES_VERSION,
+        artifact_type,
+        artifact_code,
+        owner: sender,
+        current_version: 1,
+        current_version_id: version_id,
+        version_ids,
+        comments_tree_id,
+        status: SERIES_STATUS_ACTIVE,
+        ui_status: UI_NORMAL,
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+
+    let header = CommonArtifactHeader {
+        series_id,
+        artifact_type,
+        version: 1,
+        previous_version_id: option::none(),
+        author: sender,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        status: VERSION_STATUS_VALID,
+        created_at_ms: now,
+    };
+
+    event::emit(ArtifactPublishedEvent {
+        series_id,
+        version_id,
+        artifact_type,
+        artifact_code,
+        author: sender,
+        content_hash: header.content_hash,
+        walrus_blob_id: header.walrus_blob_id,
+        content_type: header.content_type,
+        version: 1,
+        comments_tree_id,
+        created_at_ms: now,
+    });
+
+    (series, header, comments_tree)
+}
+
+fun add_version_common(
+    root: &PaperProofRoot,
+    series: &mut ArtifactSeries,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    artifact_type: u8,
+    version_id: ID,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+): CommonArtifactHeader {
+    assert_current_root(root);
+    assert_current_series(series);
+    assert!(!root.paused, E_PAUSED);
+    assert!(series.artifact_type == artifact_type, E_INVALID_ARTIFACT_TYPE);
+    assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
+    assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
+    assert!(governance::registry_id(governance_vault) == object::id(root), E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_registry_id(fee_manager) == object::id(root), E_INVALID_FEE_MANAGER);
+    validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
+    governance::collect_artifact_fee(governance_vault, fee_manager, artifact_type, payment, ctx);
+
+    let now = clock::timestamp_ms(clock_ref);
+    let sender = tx_context::sender(ctx);
+    let old_version_id = series.current_version_id;
+    let new_version = series.current_version + 1;
+    series.current_version = new_version;
+    series.current_version_id = version_id;
+    vector::push_back(&mut series.version_ids, version_id);
+    series.updated_at_ms = now;
+
+    let header = CommonArtifactHeader {
+        series_id: object::id(series),
+        artifact_type,
+        version: new_version,
+        previous_version_id: option::some(old_version_id),
+        author: sender,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        status: VERSION_STATUS_VALID,
+        created_at_ms: now,
+    };
+
+    event::emit(ArtifactVersionAddedEvent {
+        series_id: object::id(series),
+        old_version_id,
+        new_version_id: version_id,
+        artifact_type,
+        artifact_code: series.artifact_code,
+        author: sender,
+        content_hash: header.content_hash,
+        walrus_blob_id: header.walrus_blob_id,
+        content_type: header.content_type,
+        version: new_version,
+        created_at_ms: now,
+    });
+
+    header
+}
+
+fun assert_publish_context(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    index: &TypeIndex,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    artifact_type: u8,
+) {
+    assert_current_root(root);
+    assert_current_registry(type_registry);
+    assert!(!root.paused, E_PAUSED);
+    assert_valid_artifact_type(artifact_type);
+    assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
+    assert!(index.registry_id == object::id(root), E_INVALID_INDEX);
+    assert!(index.artifact_type == artifact_type, E_INVALID_INDEX);
+    let info = table::borrow(&type_registry.types, artifact_type);
+    assert!(info.enabled, E_ARTIFACT_TYPE_DISABLED);
+    assert!(info.index_object_id == object::id(index), E_INVALID_INDEX);
+    assert!(governance::registry_id(governance_vault) == object::id(root), E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_registry_id(fee_manager) == object::id(root), E_INVALID_FEE_MANAGER);
 }
 
 fun assert_admin(
-    registry: &PaperRegistry,
+    root: &PaperProofRoot,
     governance_vault: &GovernanceVault,
     operator_permit: &OperatorPermit,
     sender: address,
 ) {
-    governance::assert_active_operator(
-        governance_vault,
-        operator_permit,
-        object::id(registry),
-        sender,
-    );
+    assert!(root.governance_vault_id == object::id(governance_vault), E_INVALID_GOVERNANCE_VAULT);
+    governance::assert_active_operator(governance_vault, operator_permit, object::id(root), sender);
 }
 
-fun assert_current_registry(registry: &PaperRegistry) {
-    assert!(registry.version == PUBLISHING_REGISTRY_VERSION, E_UNSUPPORTED_REGISTRY_VERSION);
+fun assert_current_root(root: &PaperProofRoot) {
+    assert!(root.version == PAPERPROOF_ROOT_VERSION, E_UNSUPPORTED_ROOT_VERSION);
 }
 
-fun assert_current_record(record: &PaperRecord) {
-    assert!(record.version == PUBLISHING_RECORD_VERSION, E_UNSUPPORTED_RECORD_VERSION);
+fun assert_current_registry(type_registry: &TypeRegistry) {
+    assert!(type_registry.version == TYPE_REGISTRY_VERSION, E_UNSUPPORTED_REGISTRY_VERSION);
 }
 
-fun assert_record_in_registry(
-    registry: &PaperRegistry,
-    record: &PaperRecord,
-) {
-    assert!(table::contains(&registry.code_to_record, record.paper_code), E_RECORD_NOT_IN_REGISTRY);
-    assert!(*table::borrow(&registry.code_to_record, record.paper_code) == object::id(record), E_RECORD_NOT_IN_REGISTRY);
+fun assert_current_series(series: &ArtifactSeries) {
+    assert!(series.version == ARTIFACT_SERIES_VERSION, E_UNSUPPORTED_SERIES_VERSION);
 }
 
-fun migrate_registry_version(registry: &mut PaperRegistry) {
-    assert!(registry.version <= PUBLISHING_REGISTRY_VERSION, E_UNSUPPORTED_REGISTRY_VERSION);
-    if (registry.version < PUBLISHING_REGISTRY_VERSION) {
-        registry.version = PUBLISHING_REGISTRY_VERSION;
-    };
+fun assert_valid_artifact_type(artifact_type: u8) {
+    artifact_types::assert_supported(artifact_type)
 }
 
-fun migrate_record_version(record: &mut PaperRecord) {
-    assert!(record.version <= PUBLISHING_RECORD_VERSION, E_UNSUPPORTED_RECORD_VERSION);
-    if (record.version < PUBLISHING_RECORD_VERSION) {
-        record.version = PUBLISHING_RECORD_VERSION;
-    };
-}
-
-fun validate_metadata(
-    registry: &PaperRegistry,
-    title: &String,
-    abstract_text: &String,
-    keywords: &vector<String>,
-    authors: &vector<String>,
-) {
-    assert!(string::length(title) > 0, E_EMPTY_TITLE);
-    assert!(string::length(abstract_text) > 0, E_EMPTY_ABSTRACT);
+fun assert_valid_series_status(status: u8) {
     assert!(
-        vector::length(keywords) <= registry.max_keywords,
-        E_TOO_MANY_KEYWORDS,
-    );
-    assert!(vector::length(authors) > 0, E_NO_AUTHOR);
-    assert!(
-        vector::length(authors) <= registry.max_authors,
-        E_TOO_MANY_AUTHORS,
+        status == SERIES_STATUS_ACTIVE ||
+        status == SERIES_STATUS_LOCKED ||
+        status == SERIES_STATUS_HIDDEN,
+        E_INVALID_STATUS,
     );
 }
 
-fun validate_file(
-    registry: &PaperRegistry,
+fun new_index(
+    registry_id: ID,
+    artifact_type: u8,
+    ctx: &mut TxContext,
+): TypeIndex {
+    TypeIndex {
+        id: object::new(ctx),
+        version: TYPE_INDEX_VERSION,
+        registry_id,
+        artifact_type,
+        next_number: 1,
+        code_to_series: table::new(ctx),
+    }
+}
+
+fun add_type_info(
+    type_registry: &mut TypeRegistry,
+    artifact_type: u8,
+    index_object_id: ID,
+    now: u64,
+) {
+    table::add(
+        &mut type_registry.types,
+        artifact_type,
+        TypeInfo {
+            artifact_type,
+            index_object_id,
+            enabled: true,
+            schema_version: 1,
+            min_protocol_version: PAPERPROOF_ROOT_VERSION,
+            created_at_ms: now,
+            updated_at_ms: now,
+        },
+    );
+}
+
+fun apply_artifact_type_enabled(
+    type_registry: &mut TypeRegistry,
+    artifact_type: u8,
+    enabled: bool,
+    changed_by: address,
+    clock_ref: &Clock,
+) {
+    assert_valid_artifact_type(artifact_type);
+    let info = table::borrow_mut(&mut type_registry.types, artifact_type);
+    let old_enabled = info.enabled;
+    info.enabled = enabled;
+    info.updated_at_ms = clock::timestamp_ms(clock_ref);
+    event::emit(ArtifactTypeStatusChangedEvent {
+        registry_id: type_registry.registry_id,
+        artifact_type,
+        changed_by,
+        old_enabled,
+        enabled,
+        changed_at_ms: info.updated_at_ms,
+    });
+}
+
+fun validate_content_fields(
+    content_hash: &String,
     walrus_blob_id: &String,
     walrus_blob_object_id: &String,
-    file_hash: &String,
-    file_size: u64,
-    page_count: u64,
+    content_type: &String,
 ) {
-    assert!(string::length(walrus_blob_id) > 0, E_EMPTY_BLOB_ID);
-    assert!(string::length(walrus_blob_object_id) > 0, E_EMPTY_BLOB_OBJECT_ID);
-    assert!(string::length(file_hash) > 0, E_EMPTY_FILE_HASH);
-    assert!(file_size <= registry.max_file_size, E_FILE_TOO_LARGE);
-    assert!(page_count >= registry.min_page_count, E_PAGE_COUNT_TOO_SMALL);
-    assert!(page_count <= registry.max_page_count, E_PAGE_COUNT_TOO_LARGE);
+    validation::content_fields(content_hash, walrus_blob_id, walrus_blob_object_id, content_type)
 }
 
-fun make_paper_code(prefix: &String, epoch: u64, seq: u64): String {
-    let mut code = *prefix;
-    string::append(&mut code, string::utf8(b"-"));
-    string::append(&mut code, u64_to_string(epoch));
-    string::append(&mut code, string::utf8(b"-"));
-    string::append(&mut code, u64_to_string(seq));
-    code
+fun validate_title(title: &String) {
+    validation::title(title)
 }
 
-fun u64_to_string(n: u64): String {
-    if (n == 0) {
-        return string::utf8(b"0")
-    };
+fun validate_authors(authors: &vector<String>) {
+    validation::authors(authors)
+}
 
-    let mut x = n;
-    let mut digits_reversed = vector::empty<u8>();
+fun validate_keywords(keywords: &vector<String>) {
+    validation::keywords(keywords)
+}
 
-    while (x > 0) {
-        let digit = (x % 10) as u8;
-        vector::push_back(&mut digits_reversed, 48 + digit);
-        x = x / 10;
-    };
+fun validate_tags(tags: &vector<String>) {
+    validation::tags(tags)
+}
 
-    let len = vector::length(&digits_reversed);
-    let mut i = len;
-    let mut digits = vector::empty<u8>();
-
-    while (i > 0) {
-        i = i - 1;
-        let b = *vector::borrow(&digits_reversed, i);
-        vector::push_back(&mut digits, b);
-    };
-
-    string::utf8(digits)
+fun make_artifact_code(artifact_type: u8, number: u64): String {
+    artifact_types::code(artifact_type, number)
 }
 
 #[test_only]

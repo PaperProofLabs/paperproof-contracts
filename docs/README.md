@@ -17,33 +17,34 @@ Typical contents of this directory may include:
 
 Current documents include:
 
+- `Artifact-Publishing.md`: current artifact publishing architecture,
+  built-in types, `ArtifactSeries`/typed-version model, comments binding,
+  type-specific fees, and governance activation flow
 - `PPRF-governance-voting.md`: implemented `PPRF` governance voting structure,
   lock-based voting rules, and executable governance actions including the
-  official upgrade-authority path
+  official upgrade-authority and artifact proposal-ticket paths
 - `Governance-Modes.md`: detailed explanation of directly executable governance
-  and signal governance in the current `PaperProof` system, including upgrade
-  authority as an executable governance item
+  and signal governance in the current `PaperProof` system, including
+  publishing-specific governance action tickets
 - `Deployment-and-Upgrade-Runbook.md`: deployment order, root object
-  initialization, managed `UpgradeCap` custody, and recommended protocol
-  upgrade workflow for the three-package contract system
+  initialization, artifact type governance, managed `UpgradeCap` custody, and
+  recommended protocol upgrade workflow for the three-package contract system
 - `Deployment-Manifest-Template.md`: fillable deployment manifest template for
   recording package IDs, root object IDs, governance addresses, upgrade-cap
   custody, smoke tests, and frontend/runtime configuration
-- `Mainnet-Deployment-Record-2026-05-06.md`: actual mainnet deployment record
-  for the v1 contract system, including package IDs, canonical root objects,
-  `GovernanceConfig`, managed `UpgradeCap` custody, transaction digests, and
-  frontend/runtime parameters
+- `Mainnet-Deployment-Record-2026-05-06.md`: mainnet deployment record template
+  for the current contract system, including package IDs, canonical root
+  objects, governance configuration, and frontend/runtime parameters
 - `Mainnet-GoLive-Checklist.md`: concise launch-readiness checklist for final
   mainnet validation before opening the official frontend to the public
 - `Observability-and-Read-APIs.md`: current events/getters across
-  `publishing`, `comments`, and `governance`, including governance-control,
-  upgrade/migration observability, and remaining future additions for off-chain
-  monitoring and tooling
+  `publishing`, `comments`, and `governance`, including artifact events,
+  governance-control, upgrade/migration observability, and indexing guidance
 - `PPRF-Utility-Paths.md`: protocol-native and non-protocol utility paths for
   the `PPRF` token across governance, frontend, community, treasury, and
   future incentive design
 - `Treasury-and-Fee-Management.md`: current fee routing model and planned
-  treasury evolution path for protocol income and future disbursement
+  treasury evolution path, including artifact-type fee levels in `FeeManager`
 - `Versioned-Upgrade-Design.md`: current versioned-upgrade preparation,
   migration hooks, version guards, and the expected future package-upgrade
   workflow

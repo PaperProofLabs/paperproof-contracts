@@ -85,24 +85,42 @@ protocol parameters.
 
 Currently implemented executable governance actions include:
 
-- `ACTION_SET_PUBLISHING_FEE_LEVEL`
 - `ACTION_SET_COMMENTS_FEE_LEVEL`
 - `ACTION_SET_FEE_RECIPIENT`
 - `ACTION_NOMINATE_OPERATOR`
 - `ACTION_SET_PROPOSAL_CREATION_PAUSED`
 - `ACTION_SET_PROPOSER_THRESHOLD`
 - `ACTION_SET_UPGRADE_AUTHORITY`
+- `ACTION_SET_DIRECT_AUTHORITY_MODE`
+- `ACTION_SET_PROPOSAL_DURATION_EPOCHS`
+- `ACTION_SET_ARTIFACT_TYPE_ENABLED`
+- `ACTION_SET_ARTIFACT_FEE_LEVEL`
+- `ACTION_ACTIVATE_ARTIFACT_TYPE`
+- `ACTION_SET_GOVERNANCE_ACTION_ENABLED`
 
 This means `PPRF` already empowers holders to change:
 
 - protocol fee policy
+- artifact type activation
+- artifact-specific publishing fees
 - protocol income destination
 - operator legitimacy
 - governance entry conditions
 - official upgrade authority
+- availability of known governance actions
 
 This is more meaningful than symbolic voting alone, because governance outcomes
 can already change real protocol behavior.
+
+Governance action availability is also controlled by `PPRF` voting. This means
+new action code can exist in a package before that action becomes available for
+live proposals.
+
+Publishing-specific artifact actions are executed through proposal tickets:
+the vote happens in `governance_voting`, then `publishing` consumes the passed
+proposal and applies the artifact registry or fee-manager change. This keeps
+artifact type activation governed by `PPRF` holders without introducing a
+package dependency cycle.
 
 ## 2.4 Protocol Legitimacy for Signal Governance
 
@@ -258,7 +276,7 @@ contract function into a visible social process:
 - voting participation screens
 - quorum and passage visualizations
 - operator-change transparency
-- proposal history
+- proposal records
 - upgrade transparency
 
 This does not create new token rights by itself, but it greatly increases the
@@ -274,7 +292,7 @@ Examples:
 - showing whether a user meets minimum governance thresholds
 - highlighting proposal sponsors
 - highlighting active voters
-- showing governance history tied to addresses
+- showing governance records tied to addresses
 
 This creates a visible governance identity layer around `PPRF`.
 

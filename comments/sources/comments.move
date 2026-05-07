@@ -6,7 +6,7 @@
 
 module paperproof_comments::comments;
 
-use paperproof_governance::governance::{Self as governance, GovernanceVault};
+use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault};
 use pprf::pprf::PPRF;
 use std::string::{Self as string, String};
 use sui::clock::{Self as clock, Clock};
@@ -15,7 +15,7 @@ use sui::event;
 use sui::sui::SUI;
 use sui::table::{Self as table, Table};
 
-const E_EMPTY_PAPER_KEY: u64 = 1;
+const E_EMPTY_TARGET_KEY: u64 = 1;
 const E_TREE_NOT_OPEN: u64 = 2;
 const E_PARENT_NOT_FOUND: u64 = 3;
 const E_EMPTY_ONCHAIN_CONTENT: u64 = 4;
@@ -34,6 +34,7 @@ const E_INSUFFICIENT_PPRF_LIKE_BALANCE: u64 = 16;
 const E_ALREADY_LIKED: u64 = 17;
 const E_NOT_LIKED: u64 = 18;
 const E_UNSUPPORTED_TREE_VERSION: u64 = 19;
+const E_PARENT_NOT_ACTIVE: u64 = 20;
 
 const MIN_PPRF_FOR_LIKE: u64 = 1_000_000_000; // 1 PPRF
 const COMMENTS_TREE_VERSION: u64 = 1;
@@ -44,8 +45,9 @@ public struct CommentsTree has key {
     creator: address,
     owner: address,
     registry_id: ID,
-    paper_key: String,
-    paper_object_id: ID,
+    target_key: String,
+    target_series_id: ID,
+    target_artifact_type: u8,
     root_comment_id: u64,
     next_comment_id: u64,
     total_comments: u64,
@@ -79,7 +81,9 @@ public struct TreeCreatedEvent has copy, drop {
     tree_id: ID,
     creator: address,
     owner: address,
-    paper_key: String,
+    target_key: String,
+    target_series_id: ID,
+    target_artifact_type: u8,
     created_at_ms: u64,
 }
 
@@ -94,22 +98,35 @@ public struct CommentAddedEvent has copy, drop {
 }
 
 public struct TreeStatusChangedEvent has copy, drop {
+    registry_id: ID,
     tree_id: ID,
+    changed_by: address,
     old_status: u8,
     new_status: u8,
 }
 
 public struct CommentStatusChangedEvent has copy, drop {
+    registry_id: ID,
     tree_id: ID,
     comment_id: u64,
+    changed_by: address,
     old_status: u8,
     new_status: u8,
 }
 
 public struct TreeOwnerTransferredEvent has copy, drop {
+    registry_id: ID,
     tree_id: ID,
+    changed_by: address,
     old_owner: address,
     new_owner: address,
+}
+
+public struct CommentsTreeMigratedEvent has copy, drop {
+    registry_id: ID,
+    tree_id: ID,
+    migrated_by: address,
+    new_version: u64,
 }
 
 public struct PaperLikedEvent has copy, drop {
@@ -143,12 +160,13 @@ const DEFAULT_MAX_COMMENT_DEPTH: u16 = 64;
 public fun new_tree(
     registry_id: ID,
     owner: address,
-    paper_key: String,
-    paper_object_id: ID,
+    target_key: String,
+    target_series_id: ID,
+    target_artifact_type: u8,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ): CommentsTree {
-    assert!(!string::is_empty(&paper_key), E_EMPTY_PAPER_KEY);
+    assert!(!string::is_empty(&target_key), E_EMPTY_TARGET_KEY);
 
     let mut tree = CommentsTree {
         id: object::new(ctx),
@@ -156,8 +174,9 @@ public fun new_tree(
         creator: tx_context::sender(ctx),
         owner,
         registry_id,
-        paper_key,
-        paper_object_id,
+        target_key,
+        target_series_id,
+        target_artifact_type,
         root_comment_id: ROOT_COMMENT_ID,
         next_comment_id: 1,
         total_comments: 0,
@@ -192,7 +211,9 @@ public fun new_tree(
         tree_id: *tree.id.as_inner(),
         creator: tree.creator,
         owner: tree.owner,
-        paper_key: tree.paper_key,
+        target_key: tree.target_key,
+        target_series_id: tree.target_series_id,
+        target_artifact_type: tree.target_artifact_type,
         created_at_ms: tree.created_at_ms,
     });
 
@@ -206,6 +227,7 @@ public fun share_tree(tree: CommentsTree) {
 public fun add_onchain_comment(
     tree: &mut CommentsTree,
     governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
     parent_comment_id: u64,
     content: vector<u8>,
     payment: Option<Coin<SUI>>,
@@ -219,14 +241,16 @@ public fun add_onchain_comment(
     assert!(!content.is_empty(), E_EMPTY_ONCHAIN_CONTENT);
     assert!(content.length() <= tree.max_onchain_comment_bytes, E_ONCHAIN_CONTENT_TOO_LARGE);
     assert!(governance::registry_id(governance_vault) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_registry_id(fee_manager) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
 
     let parent_depth = {
         let parent = table::borrow(&tree.nodes, parent_comment_id);
+        assert!(parent.status == COMMENT_STATUS_ACTIVE, E_PARENT_NOT_ACTIVE);
         parent.depth
     };
     let depth = parent_depth + 1;
     assert!(depth <= tree.max_comment_depth, E_COMMENT_DEPTH_LIMIT);
-    governance::collect_comments_fee(governance_vault, payment, ctx);
+    governance::collect_comments_fee(governance_vault, fee_manager, payment, ctx);
 
     let comment_id = tree.next_comment_id;
     tree.next_comment_id = comment_id + 1;
@@ -270,6 +294,7 @@ public fun add_onchain_comment(
 public fun add_blob_comment(
     tree: &mut CommentsTree,
     governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
     parent_comment_id: u64,
     blob_id: vector<u8>,
     blob_object_id: Option<ID>,
@@ -286,14 +311,16 @@ public fun add_blob_comment(
     assert!(!blob_id.is_empty(), E_EMPTY_BLOB_ID);
     assert!(!blob_digest.is_empty(), E_EMPTY_BLOB_DIGEST);
     assert!(governance::registry_id(governance_vault) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_registry_id(fee_manager) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
 
     let parent_depth = {
         let parent = table::borrow(&tree.nodes, parent_comment_id);
+        assert!(parent.status == COMMENT_STATUS_ACTIVE, E_PARENT_NOT_ACTIVE);
         parent.depth
     };
     let depth = parent_depth + 1;
     assert!(depth <= tree.max_comment_depth, E_COMMENT_DEPTH_LIMIT);
-    governance::collect_comments_fee(governance_vault, payment, ctx);
+    governance::collect_comments_fee(governance_vault, fee_manager, payment, ctx);
 
     let comment_id = tree.next_comment_id;
     tree.next_comment_id = comment_id + 1;
@@ -387,7 +414,9 @@ public fun set_tree_status(
     tree.status = new_status;
 
     event::emit(TreeStatusChangedEvent {
+        registry_id: tree.registry_id,
         tree_id: *tree.id.as_inner(),
+        changed_by: tx_context::sender(ctx),
         old_status,
         new_status,
     });
@@ -411,8 +440,10 @@ public fun set_comment_status(
     node.edited_at_ms = option::none<u64>();
 
     event::emit(CommentStatusChangedEvent {
+        registry_id: tree.registry_id,
         tree_id: *tree.id.as_inner(),
         comment_id,
+        changed_by: tx_context::sender(ctx),
         old_status,
         new_status,
     });
@@ -431,7 +462,9 @@ public fun transfer_tree_owner(
     tree.owner = new_owner;
 
     event::emit(TreeOwnerTransferredEvent {
+        registry_id: tree.registry_id,
         tree_id: *tree.id.as_inner(),
+        changed_by: tx_context::sender(ctx),
         old_owner,
         new_owner,
     });
@@ -461,12 +494,16 @@ public fun registry_id(tree: &CommentsTree): ID {
     tree.registry_id
 }
 
-public fun paper_key(tree: &CommentsTree): &String {
-    &tree.paper_key
+public fun target_key(tree: &CommentsTree): &String {
+    &tree.target_key
 }
 
-public fun paper_object_id(tree: &CommentsTree): ID {
-    tree.paper_object_id
+public fun target_series_id(tree: &CommentsTree): ID {
+    tree.target_series_id
+}
+
+public fun target_artifact_type(tree: &CommentsTree): u8 {
+    tree.target_artifact_type
 }
 
 public fun root_comment_id(tree: &CommentsTree): u64 {
@@ -612,6 +649,12 @@ public fun migrate_tree(
     assert!(governance::registry_id(governance_vault) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
     governance::assert_upgrade_authority(governance_vault, tx_context::sender(ctx));
     migrate_tree_version(tree);
+    event::emit(CommentsTreeMigratedEvent {
+        registry_id: tree.registry_id,
+        tree_id: *tree.id.as_inner(),
+        migrated_by: tx_context::sender(ctx),
+        new_version: tree.version,
+    });
 }
 
 fun assert_tree_open(tree: &CommentsTree) {
