@@ -1,86 +1,68 @@
-# PaperProof JS Mainnet Test Harness
+# PaperProof JS Mainnet Harness
 
-This directory contains a real mainnet functional test harness for the canonical
-`paperproof-contracts` deployment.
+This directory contains live Sui mainnet scripts for the current PaperProof
+deployment. The scripts are intended to be both an operational smoke test and a
+frontend reference for building transaction blocks against the deployed
+contracts.
 
-It is designed to validate:
+## Current Scope
 
-- `publishing`
-- `comments`
-- likes / unlikes
-- paper owner to comments tree owner synchronization
-- governance proposal creation and voting
-- next-day governance finalization and token reclaim
+The main script covers the latest `artifact series / artifact version` model:
 
-It intentionally **does not execute any successful executable governance action**.
+- preprint publish, metadata extensions, and second version
+- software release publish using `node_modules/pdf-lib/package.json`
+- comments tree creation through publishing
+- on-chain comment, blob-backed comment, hidden-state negative case
+- likes through the separate `LikesBook`, including duplicate like/unlike checks
+- tree lock/reopen behavior
+- artifact owner transfer and comments tree owner synchronization
+- series metadata update by old/new owner
+- signal governance proposal, counter-vote, early settlement, balance reclaim
+- final PPRF conservation check across the four configured accounts
+
+Only two artifact types are used:
+
+- `preprint`
+- `software_release`
+
+The preprint path is the primary example.
 
 ## Files
 
 - [mainnet-functional-test.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/mainnet-functional-test.mjs)
-  - main write-phase test script
-  - runs all same-day publishing / comments / like / governance-create-and-vote actions
-  - stops before governance finalize / claim
-- [mainnet-governance-finalize.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/mainnet-governance-finalize.mjs)
-  - next-day finalize script
-  - currently hardcoded for the live mainnet governance test proposal
-  - if the outcome is already mathematically fixed while voting is still open,
-    it first tries `resolve_proposal_early`
-  - otherwise it finalizes the active proposal after its end epoch
-  - reclaims proposer-locked `PPRF`
+  - validates the deployment and runs the full mainnet smoke flow
+  - writes JSON artifacts and markdown logs
+  - includes a PPRF protection path that attempts to settle an active proposal
+    and return temporary balances if the script fails
 - [paperproof-mainnet-common.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/paperproof-mainnet-common.mjs)
-  - shared helpers for:
-    - key loading
-    - Sui / Walrus clients
-    - PDF stamping
-    - Walrus upload
-    - contract transactions
-    - object reads
-- [docs/Mainnet-Functional-Test-Plan.md](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/docs/Mainnet-Functional-Test-Plan.md)
-  - functional test plan and expected coverage
+  - current deployment constants
+  - account loading
+  - read helpers
+  - transaction helpers for publishing, comments, likes, metadata, ownership,
+    governance, and coin transfers
+- [mainnet-governance-finalize.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/mainnet-governance-finalize.mjs)
+  - older standalone finalize utility kept for reference
+  - the main flow now uses early settlement and normally does not need a next
+    epoch finalize step
 
-## Prerequisites
+Runtime outputs are written to:
 
-This harness expects:
+- [artifacts](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/artifacts)
+- [logs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/logs)
 
-- `.env` to exist in this directory
-- 3 configured Sui mainnet accounts:
-  - `ADDR_1` / `PRIVATE_KEY_1`
-  - `ADDR_2` / `PRIVATE_KEY_2`
-  - `ADDR_3` / `PRIVATE_KEY_3`
-- the canonical mainnet contracts and objects already deployed
-- the two sample PDFs to exist under:
-  - [paperSamples](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/paperSamples)
-
-The current scripts assume the canonical mainnet deployment described in:
-
-- [../docs/Mainnet-Deployment-Record-2026-05-06.md](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/docs/Mainnet-Deployment-Record-2026-05-06.md)
+These runtime files are ignored by Git.
 
 ## Install
 
-From:
-
-- `D:\Works\VscodeProject\PaperProofLabs\paperproof-contracts\jstest`
-
-run:
+From this directory:
 
 ```powershell
 npm install
 ```
 
-## Safe validation
+## Validate
 
-This does **not** send any write transaction.
-
-It validates:
-
-- env account parsing
-- key / address matching
-- canonical object reachability
-- current SUI / `PPRF` balances
-- sample file presence
-- current governance duration / threshold assumptions
-
-Run:
+Read-only validation:
 
 ```powershell
 node .\mainnet-functional-test.mjs --validate
@@ -92,38 +74,18 @@ or:
 npm run validate
 ```
 
-## Main write-phase test
+Validation checks:
 
-This sends **real mainnet transactions**.
+- `.env` address/key consistency
+- canonical root, registry, fee manager, vault, and governance config
+- current role bindings to `ADDR_4`
+- sample preprint PDF and software sample file presence
+- SUI, WAL, and PPRF balances
+- current `active_proposal_id`
 
-It covers:
+## Run
 
-- `ADDR_1 -> ADDR_3` transfer of `1 PPRF`
-- optional small SUI / WAL prefunding for `ADDR_2` and `ADDR_3` when needed
-- low-balance failed proposer attempts
-- publish Paper A
-- publish Paper B
-- add version to Paper A
-- extend storage for Paper A version 2
-- like / unlike flow
-- duplicate like / unlike-again failures
-- Paper A comment tree with:
-  - `3` top-level branches
-  - depth `3`
-  - one hidden node
-  - one blob-backed reply under a hidden node
-- Paper B owner transfer to `ADDR_3`
-- comments tree governance sync after owner transfer
-- locked-tree reject path and reopen-success path
-- governance executable proposal creation by `ADDR_1`
-- second proposal while active failure
-- low-balance vote failure for `ADDR_2`
-- low-balance vote failure for `ADDR_3`
-
-It stops after proposal creation and voting, because the proposal must wait
-until the next epoch before finalize.
-
-Run:
+This sends real Sui mainnet transactions:
 
 ```powershell
 node .\mainnet-functional-test.mjs --run
@@ -135,79 +97,53 @@ or:
 npm run run
 ```
 
-## Next-day governance finalize
+The script intentionally spends small SUI gas and may use small WAL/SUI funding
+for participant accounts. PPRF is handled as a protected balance:
 
-The current repository already contains a hardcoded finalize script for the live
-mainnet governance test proposal. In later rounds, the main script may rewrite
-that helper with a new hardcoded proposal id and related invariants.
+- temporary PPRF is sent only when a feature requires proof or staking
+- the governance phase is settled in the same run when possible
+- participant PPRF is returned to `ADDR_4`
+- the script asserts the final PPRF total across `.env` accounts is unchanged
 
-After the proposal epoch ends, run:
+The latest successful run was:
 
-```powershell
-node .\mainnet-governance-finalize.mjs
-```
+- run id: `mainnet-current-smoke-2026-05-07T17-29-30-998Z`
+- artifact:
+  [artifacts/mainnet-current-smoke-2026-05-07T17-29-30-998Z.json](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/artifacts/mainnet-current-smoke-2026-05-07T17-29-30-998Z.json)
+- log:
+  [logs/mainnet-current-smoke-2026-05-07T17-29-30-998Z.md](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/logs/mainnet-current-smoke-2026-05-07T17-29-30-998Z.md)
+- PPRF guard delta: `0`
 
-or:
+Created example objects from that run:
 
-```powershell
-npm run finalize
-```
+- preprint series:
+  `0xe89ef69f7f74db99ee8ff76c2151ea6be961b2005b333defbecb48d724df237b`
+- preprint artifact code:
+  `PaperProof-preprint-001120-e89ef69f7f74`
+- preprint comments tree:
+  `0xc27bb4ddbf6afca87af6422f4d78d139805308fe2f6b15cd2c0ea4b7f4b4d018`
+- preprint likes book:
+  `0xa4f06bfb6b2909b8e958e2977378a3600dbc3ed8dc64b92fa491a10dae427891`
+- software release series:
+  `0x9e7bdd016ebc68b1edc552a08715bee8c6e48b3afdeea8690cb4959a1942a2ed`
+- software release artifact code:
+  `PaperProof-software_release-001120-9e7bdd016ebc`
+- governance proposal:
+  `0x722f3a05da653ec107b739b39264c082187bbabe5b324952edc07e29e1dab65e`
 
-That second script will:
+## Frontend Reference Notes
 
-- either resolve the proposal early when the result is already fixed, or
-  finalize it after the end epoch
-- verify it becomes `REJECTED`
-- reclaim locked `PPRF` for `ADDR_1`
-- verify `ADDR_2` / `ADDR_3` cannot claim because no successful vote was recorded
-- verify a duplicate `ADDR_1` claim attempt fails
-- verify `comments_fee_level` remains unchanged
-- verify `active_proposal_id` is cleared
+Use [paperproof-mainnet-common.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/paperproof-mainnet-common.mjs)
+as the reference for:
 
-## Runtime outputs
+- building `MetadataAttribute` values with `publishing::metadata_attribute`
+- passing `vector<MetadataAttribute>` into publish/update calls
+- using `noneSuiPayment(tx)` for optional free-fee payment paths
+- reading series, versions, comments tree, likes book, and proposal objects
+- treating `comments_tree_id` and `likes_book_id` as separate objects
+- handling expected Move aborts as negative tests
+- rebuilding transactions when Sui reports stale object versions
 
-The scripts write runtime artifacts to:
-
-- [artifacts](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/artifacts)
-- [logs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/logs)
-
-Typical outputs include:
-
-- JSON run artifact
-- markdown log
-- markdown summary
-- stamped output PDFs
-
-These runtime files are ignored by Git.
-
-## Important operating notes
-
-- `ADDR_3` starts with `0 PPRF` in the expected test baseline
-- repeated or partially completed runs may leave `ADDR_3` with `1 PPRF`; the
-  current script tolerates either `0` or `1`
-- because `like_paper` and governance proposal creation both require a `Coin<PPRF>`
-  object input, the script proves the pre-transfer condition mainly by balance
-  inspection and by low-balance proposer failures using `ADDR_2`
-- governance voting has an on-chain minimum stake of `> 100 PPRF`, so `ADDR_2`
-  and `ADDR_3` are expected to fail when attempting to cast `NO` votes
-- current governance proposal duration is expected to be `1` epoch
-- the main script refuses to proceed if an active proposal already exists
-- the main script now blocks cleanly when a prior governance test proposal is
-  still active
-- the finalize script now has a dual settlement path:
-  - `resolve_proposal_early` if the outcome is already mathematically fixed
-  - `finalize_proposal` once the proposal end epoch has passed
-- repeated mainnet runs are still not fully idempotent; they create fresh paper
-  records and comments when allowed to proceed
-
-## Recommended operator workflow
-
-1. Run `--validate`
-2. Inspect balances and current governance state
-3. Run `--run`
-4. Wait until the proposal epoch ends
-5. Run `mainnet-governance-finalize.mjs`
-6. Keep the generated artifacts for:
-   - front-end configuration
-   - manual verification
-   - future regression comparison
+For production frontend code, keep private-key loading out of the browser. The
+transaction-building shapes in this harness are the useful part; signing should
+come from wallet adapters.
