@@ -44,10 +44,11 @@ objects:
 4. `publishing::ArtifactSeries`
 5. typed publishing `VersionRecord` objects
 6. `comments::CommentsTree`
-7. `governance::GovernanceVault`
-8. `governance::FeeManager`
-9. `governance_voting::GovernanceConfig`
-10. `governance_voting::Proposal`
+7. `comments::TreeFactoryCap`
+8. `governance::GovernanceVault`
+9. `governance::FeeManager`
+10. `governance_voting::GovernanceConfig`
+11. `governance_voting::Proposal`
 
 These are the main state objects that define the long-lived protocol surface.
 
@@ -122,6 +123,10 @@ The current implementation uses the following version constants:
 - `comments::COMMENTS_TREE_VERSION = 1`
 
 At present, all newly created objects start at version `1`.
+
+`TreeFactoryCap` is also a long-lived shared capability object. It is recorded
+by `PaperProofRoot` and constrains official comments tree creation, but it does
+not currently require a separate version getter or migration hook.
 
 ## Current Version Guards
 

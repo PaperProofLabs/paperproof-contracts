@@ -35,9 +35,16 @@ const E_ALREADY_LIKED: u64 = 17;
 const E_NOT_LIKED: u64 = 18;
 const E_UNSUPPORTED_TREE_VERSION: u64 = 19;
 const E_PARENT_NOT_ACTIVE: u64 = 20;
+const E_BLOB_ID_TOO_LONG: u64 = 21;
+const E_BLOB_DIGEST_TOO_LONG: u64 = 22;
+const E_CONTENT_PREVIEW_TOO_LONG: u64 = 23;
+const E_INVALID_TREE_FACTORY_CAP: u64 = 24;
 
 const MIN_PPRF_FOR_LIKE: u64 = 1_000_000_000; // 1 PPRF
 const COMMENTS_TREE_VERSION: u64 = 1;
+const MAX_BLOB_ID_BYTES: u64 = 128;
+const MAX_BLOB_DIGEST_BYTES: u64 = 128;
+const MAX_CONTENT_PREVIEW_BYTES: u64 = 256;
 
 public struct CommentsTree has key {
     id: UID,
@@ -45,6 +52,8 @@ public struct CommentsTree has key {
     creator: address,
     owner: address,
     registry_id: ID,
+    governance_vault_id: ID,
+    fee_manager_id: ID,
     target_key: String,
     target_series_id: ID,
     target_artifact_type: u8,
@@ -58,6 +67,13 @@ public struct CommentsTree has key {
     like_count: u64,
     likes: Table<address, bool>,
     nodes: Table<u64, CommentNode>,
+}
+
+public struct TreeFactoryCap has key {
+    id: UID,
+    registry_id: ID,
+    governance_vault_id: ID,
+    fee_manager_id: ID,
 }
 
 public struct CommentNode has store {
@@ -81,6 +97,9 @@ public struct TreeCreatedEvent has copy, drop {
     tree_id: ID,
     creator: address,
     owner: address,
+    registry_id: ID,
+    governance_vault_id: ID,
+    fee_manager_id: ID,
     target_key: String,
     target_series_id: ID,
     target_artifact_type: u8,
@@ -157,8 +176,40 @@ const COMMENT_STATUS_DELETED: u8 = 2;
 const DEFAULT_MAX_ONCHAIN_COMMENT_BYTES: u64 = 512;
 const DEFAULT_MAX_COMMENT_DEPTH: u16 = 64;
 
+public fun new_tree_factory_cap(
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    ctx: &mut TxContext,
+): TreeFactoryCap {
+    governance::assert_current_vault(governance_vault);
+    let sender = tx_context::sender(ctx);
+    assert!(
+        sender == governance::governance_authority(governance_vault) ||
+        sender == governance::upgrade_authority(governance_vault),
+        E_INVALID_TREE_FACTORY_CAP,
+    );
+    assert!(
+        governance::fee_manager_registry_id(fee_manager) == governance::registry_id(governance_vault),
+        E_INVALID_TREE_FACTORY_CAP,
+    );
+
+    TreeFactoryCap {
+        id: object::new(ctx),
+        registry_id: governance::registry_id(governance_vault),
+        governance_vault_id: object::id(governance_vault),
+        fee_manager_id: governance::fee_manager_id(fee_manager),
+    }
+}
+
+public fun share_tree_factory_cap(cap: TreeFactoryCap) {
+    transfer::share_object(cap);
+}
+
 public fun new_tree(
+    tree_factory_cap: &TreeFactoryCap,
     registry_id: ID,
+    governance_vault_id: ID,
+    fee_manager_id: ID,
     owner: address,
     target_key: String,
     target_series_id: ID,
@@ -166,6 +217,7 @@ public fun new_tree(
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ): CommentsTree {
+    assert_tree_factory_cap(tree_factory_cap, registry_id, governance_vault_id, fee_manager_id);
     assert!(!string::is_empty(&target_key), E_EMPTY_TARGET_KEY);
 
     let mut tree = CommentsTree {
@@ -174,6 +226,8 @@ public fun new_tree(
         creator: tx_context::sender(ctx),
         owner,
         registry_id,
+        governance_vault_id,
+        fee_manager_id,
         target_key,
         target_series_id,
         target_artifact_type,
@@ -211,6 +265,9 @@ public fun new_tree(
         tree_id: *tree.id.as_inner(),
         creator: tree.creator,
         owner: tree.owner,
+        registry_id: tree.registry_id,
+        governance_vault_id: tree.governance_vault_id,
+        fee_manager_id: tree.fee_manager_id,
         target_key: tree.target_key,
         target_series_id: tree.target_series_id,
         target_artifact_type: tree.target_artifact_type,
@@ -242,6 +299,8 @@ public fun add_onchain_comment(
     assert!(content.length() <= tree.max_onchain_comment_bytes, E_ONCHAIN_CONTENT_TOO_LARGE);
     assert!(governance::registry_id(governance_vault) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
     assert!(governance::fee_manager_registry_id(fee_manager) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(object::id(governance_vault) == tree.governance_vault_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_id(fee_manager) == tree.fee_manager_id, E_INVALID_GOVERNANCE_VAULT);
 
     let parent_depth = {
         let parent = table::borrow(&tree.nodes, parent_comment_id);
@@ -310,8 +369,13 @@ public fun add_blob_comment(
     assert!(table::contains(&tree.nodes, parent_comment_id), E_PARENT_NOT_FOUND);
     assert!(!blob_id.is_empty(), E_EMPTY_BLOB_ID);
     assert!(!blob_digest.is_empty(), E_EMPTY_BLOB_DIGEST);
+    assert!(blob_id.length() <= MAX_BLOB_ID_BYTES, E_BLOB_ID_TOO_LONG);
+    assert!(blob_digest.length() <= MAX_BLOB_DIGEST_BYTES, E_BLOB_DIGEST_TOO_LONG);
+    assert!(content_preview.length() <= MAX_CONTENT_PREVIEW_BYTES, E_CONTENT_PREVIEW_TOO_LONG);
     assert!(governance::registry_id(governance_vault) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
     assert!(governance::fee_manager_registry_id(fee_manager) == tree.registry_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(object::id(governance_vault) == tree.governance_vault_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_id(fee_manager) == tree.fee_manager_id, E_INVALID_GOVERNANCE_VAULT);
 
     let parent_depth = {
         let parent = table::borrow(&tree.nodes, parent_comment_id);
@@ -433,7 +497,11 @@ public fun set_comment_status(
     assert!(table::contains(&tree.nodes, comment_id), E_COMMENT_NOT_FOUND);
 
     let node = table::borrow_mut(&mut tree.nodes, comment_id);
-    assert!(node.author == tx_context::sender(ctx) || tree.owner == tx_context::sender(ctx), E_NOT_COMMENT_OWNER_OR_TREE_OWNER);
+    let sender = tx_context::sender(ctx);
+    if (sender != tree.owner) {
+        assert!(sender == node.author, E_NOT_COMMENT_OWNER_OR_TREE_OWNER);
+        assert!(new_status == COMMENT_STATUS_DELETED, E_NOT_COMMENT_OWNER_OR_TREE_OWNER);
+    };
 
     let old_status = node.status;
     node.status = new_status;
@@ -492,6 +560,22 @@ public fun owner(tree: &CommentsTree): address {
 
 public fun registry_id(tree: &CommentsTree): ID {
     tree.registry_id
+}
+
+public fun governance_vault_id(tree: &CommentsTree): ID {
+    tree.governance_vault_id
+}
+
+public fun fee_manager_id(tree: &CommentsTree): ID {
+    tree.fee_manager_id
+}
+
+public fun tree_factory_cap_id(cap: &TreeFactoryCap): ID {
+    object::id(cap)
+}
+
+public fun tree_factory_cap_registry_id(cap: &TreeFactoryCap): ID {
+    cap.registry_id
 }
 
 public fun target_key(tree: &CommentsTree): &String {
@@ -685,6 +769,17 @@ fun assert_valid_comment_status(status: u8) {
 
 fun assert_current_tree(tree: &CommentsTree) {
     assert!(tree.version == COMMENTS_TREE_VERSION, E_UNSUPPORTED_TREE_VERSION);
+}
+
+fun assert_tree_factory_cap(
+    cap: &TreeFactoryCap,
+    registry_id: ID,
+    governance_vault_id: ID,
+    fee_manager_id: ID,
+) {
+    assert!(cap.registry_id == registry_id, E_INVALID_TREE_FACTORY_CAP);
+    assert!(cap.governance_vault_id == governance_vault_id, E_INVALID_TREE_FACTORY_CAP);
+    assert!(cap.fee_manager_id == fee_manager_id, E_INVALID_TREE_FACTORY_CAP);
 }
 
 fun migrate_tree_version(tree: &mut CommentsTree) {

@@ -22,10 +22,12 @@ objects:
 - six initial `TypeIndex` objects
 - `FeeManager`
 - `GovernanceVault`
+- `TreeFactoryCap`
 - initial `OperatorPermit`
 
 `PaperProofRoot` stores only root dependency IDs. `TypeRegistry` stores the
-artifact-type-to-index mapping.
+artifact-type-to-index mapping. The root also records the official
+`comments::TreeFactoryCap` ID used to create per-series comments trees.
 
 ## Built-In Types
 
@@ -49,6 +51,7 @@ Record:
 - `TypeRegistry` object ID
 - `FeeManager` object ID
 - `GovernanceVault` object ID
+- `TreeFactoryCap` object ID
 - `GovernanceConfig` object ID, once created
 - every initial `TypeIndex` object ID
 - initial `OperatorPermit` recipient
@@ -63,7 +66,8 @@ After publishing initialization:
 2. verify `GovernanceConfig.registry_id == PaperProofRoot ID`
 3. verify `GovernanceVault.registry_id == PaperProofRoot ID`
 4. verify `FeeManager.registry_id == PaperProofRoot ID`
-5. record proposer threshold, proposal duration, and active proposal state
+5. verify `TreeFactoryCap.registry_id == PaperProofRoot ID`
+6. record proposer threshold, proposal duration, and active proposal state
 
 ## Artifact Type Governance
 
@@ -90,13 +94,14 @@ Minimum deployment smoke test:
 2. verify an `ArtifactSeries` was created
 3. verify the relevant `TypeIndex` maps code to series ID
 4. verify a `CommentsTree` was created and bound to the series
-5. add a version and verify the comments tree ID remains unchanged
-6. add an on-chain comment
-7. create a governance proposal
-8. cast a yes vote
-9. finalize the proposal
-10. execute the proposal
-11. claim locked voting funds
+5. verify publication used the official `TreeFactoryCap`
+6. add a version and verify the comments tree ID remains unchanged
+7. add an on-chain comment
+8. create a governance proposal
+9. cast a yes vote
+10. finalize the proposal
+11. execute the proposal
+12. claim locked voting funds
 
 ## Upgrade Flow
 
@@ -139,9 +144,12 @@ Maintain these invariants:
 - one official `TypeRegistry`
 - one official `FeeManager`
 - one official `GovernanceVault`
+- one official `TreeFactoryCap`
 - every built-in type maps to the expected `TypeIndex`
 - `GovernanceVault.registry_id == PaperProofRoot ID`
 - `GovernanceConfig.registry_id == PaperProofRoot ID`
 - `FeeManager.registry_id == PaperProofRoot ID`
+- `TreeFactoryCap.registry_id == PaperProofRoot ID`
+- `PaperProofRoot.comments_tree_factory_cap_id == TreeFactoryCap ID`
 - each `ArtifactSeries` binds exactly one official `CommentsTree`
 - later versions reuse the same comments tree

@@ -7,7 +7,7 @@ use std::string::{Self as string, String};
 
 use paperproof_publishing::artifact_types;
 use paperproof_publishing::validation;
-use paperproof_comments::comments::{Self as comments, CommentsTree};
+use paperproof_comments::comments::{Self as comments, CommentsTree, TreeFactoryCap};
 use paperproof_governance::governance::{
     Self as governance,
     FeeManager,
@@ -31,17 +31,24 @@ const E_ARTIFACT_TYPE_DISABLED: u64 = 6;
 const E_INVALID_INDEX: u64 = 7;
 const E_INVALID_GOVERNANCE_VAULT: u64 = 8;
 const E_INVALID_FEE_MANAGER: u64 = 9;
-const E_EMPTY_ABSTRACT: u64 = 15;
-const E_EMPTY_DESCRIPTION: u64 = 16;
 const E_NOT_OWNER: u64 = 21;
 const E_INVALID_STATUS: u64 = 22;
 const E_INVALID_COMMENTS_TREE: u64 = 23;
 const E_INVALID_GOVERNANCE_ACTION: u64 = 24;
+const E_TOO_MANY_VERSIONS: u64 = 25;
+const E_TOO_MANY_METADATA_ATTRIBUTES: u64 = 26;
+const E_EMPTY_METADATA_KEY: u64 = 27;
+const E_METADATA_TEXT_TOO_LONG: u64 = 28;
+const E_DUPLICATE_METADATA_KEY: u64 = 29;
 
 const PAPERPROOF_ROOT_VERSION: u64 = 1;
 const TYPE_REGISTRY_VERSION: u64 = 1;
 const TYPE_INDEX_VERSION: u64 = 1;
 const ARTIFACT_SERIES_VERSION: u64 = 1;
+const MAX_VERSIONS_PER_SERIES: u64 = 168;
+const MAX_METADATA_ATTRIBUTES: u64 = 4;
+const MAX_METADATA_KEY_BYTES: u64 = 64;
+const MAX_METADATA_VALUE_BYTES: u64 = 511;
 
 const SERIES_STATUS_ACTIVE: u8 = 0;
 const SERIES_STATUS_LOCKED: u8 = 1;
@@ -60,6 +67,7 @@ public struct PaperProofRoot has key {
     governance_vault_id: ID,
     fee_manager_id: ID,
     type_registry_id: ID,
+    comments_tree_factory_cap_id: ID,
 }
 
 public struct TypeInfo has store {
@@ -88,6 +96,11 @@ public struct TypeIndex has key {
     code_to_series: Table<String, ID>,
 }
 
+public struct MetadataAttribute has copy, drop, store {
+    key: String,
+    value: String,
+}
+
 public struct ArtifactSeries has key {
     id: UID,
     version: u64,
@@ -97,6 +110,7 @@ public struct ArtifactSeries has key {
     current_version: u64,
     current_version_id: ID,
     version_ids: vector<ID>,
+    metadata_extensions: vector<MetadataAttribute>,
     comments_tree_id: ID,
     status: u8,
     ui_status: u8,
@@ -114,6 +128,7 @@ public struct CommonArtifactHeader has store {
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    metadata_extensions: vector<MetadataAttribute>,
     status: u8,
     created_at_ms: u64,
 }
@@ -222,6 +237,14 @@ public struct ArtifactStatusChangedEvent has copy, drop {
     changed_at_ms: u64,
 }
 
+public struct ArtifactSeriesMetadataUpdatedEvent has copy, drop {
+    series_id: ID,
+    artifact_type: u8,
+    updated_by: address,
+    metadata_count: u64,
+    updated_at_ms: u64,
+}
+
 public struct ArtifactTypeStatusChangedEvent has copy, drop {
     registry_id: ID,
     artifact_type: u8,
@@ -245,6 +268,7 @@ public struct PaperProofRootCreatedEvent has copy, drop {
     governance_vault_id: ID,
     fee_manager_id: ID,
     type_registry_id: ID,
+    comments_tree_factory_cap_id: ID,
 }
 
 public struct TypeRegistryCreatedEvent has copy, drop {
@@ -296,6 +320,8 @@ fun init(ctx: &mut TxContext) {
     let fee_manager = governance::new_fee_manager(root_id, ctx);
     let (vault, operator_permit) = governance::new_vault(root_id, sender, sender, ctx);
 
+    let comments_tree_factory_cap = comments::new_tree_factory_cap(&vault, &fee_manager, ctx);
+
     let root = PaperProofRoot {
         id: root_uid,
         version: PAPERPROOF_ROOT_VERSION,
@@ -303,10 +329,12 @@ fun init(ctx: &mut TxContext) {
         governance_vault_id: object::id(&vault),
         fee_manager_id: governance::fee_manager_id(&fee_manager),
         type_registry_id: object::id(&type_registry),
+        comments_tree_factory_cap_id: comments::tree_factory_cap_id(&comments_tree_factory_cap),
     };
     let governance_vault_id = root.governance_vault_id;
     let fee_manager_id = root.fee_manager_id;
     let type_registry_id = root.type_registry_id;
+    let comments_tree_factory_cap_id = root.comments_tree_factory_cap_id;
 
     event::emit(PaperProofRootCreatedEvent {
         root_id,
@@ -314,6 +342,7 @@ fun init(ctx: &mut TxContext) {
         governance_vault_id,
         fee_manager_id,
         type_registry_id,
+        comments_tree_factory_cap_id,
     });
     event::emit(TypeRegistryCreatedEvent { root_id, type_registry_id, created_by: sender });
     event::emit(TypeIndexCreatedEvent { root_id, artifact_type: artifact_types::preprint(), type_index_id: preprint_index_id, created_by: sender });
@@ -331,6 +360,7 @@ fun init(ctx: &mut TxContext) {
     transfer::share_object(software_release_index);
     transfer::share_object(generic_file_index);
     transfer::share_object(type_registry);
+    comments::share_tree_factory_cap(comments_tree_factory_cap);
     governance::share_fee_manager(fee_manager);
     governance::share_vault(vault);
     transfer::public_transfer(operator_permit, sender);
@@ -342,6 +372,7 @@ public fun publish_preprint(
     index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     abstract_text: String,
     authors: vector<String>,
@@ -353,14 +384,18 @@ public fun publish_preprint(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_long_text(&abstract_text);
     validate_authors(&authors);
     validate_keywords(&keywords);
+    validate_short_text(&field);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let (series, header, comments_tree) = publish_common(
@@ -369,12 +404,15 @@ public fun publish_preprint(
         index,
         governance_vault,
         fee_manager,
+        comments_tree_factory_cap,
         artifact_types::preprint(),
         version_id,
         content_hash,
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        series_metadata_extensions,
+        version_metadata_extensions,
         payment,
         clock_ref,
         ctx,
@@ -401,6 +439,7 @@ public fun publish_blog_post(
     index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     summary: String,
     tags: vector<String>,
@@ -409,13 +448,16 @@ public fun publish_blog_post(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&summary) > 0, E_EMPTY_DESCRIPTION);
+    validate_medium_text(&summary);
     validate_tags(&tags);
+    validate_short_text(&language);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let (series, header, comments_tree) = publish_common(
@@ -424,12 +466,15 @@ public fun publish_blog_post(
         index,
         governance_vault,
         fee_manager,
+        comments_tree_factory_cap,
         artifact_types::blog_post(),
         version_id,
         content_hash,
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        series_metadata_extensions,
+        version_metadata_extensions,
         payment,
         clock_ref,
         ctx,
@@ -446,6 +491,7 @@ public fun publish_technical_report(
     index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     abstract_text: String,
     authors: vector<String>,
@@ -457,14 +503,19 @@ public fun publish_technical_report(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_long_text(&abstract_text);
     validate_authors(&authors);
     validate_keywords(&keywords);
+    validate_short_text(&organization);
+    validate_short_text(&report_number);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let (series, header, comments_tree) = publish_common(
@@ -473,12 +524,15 @@ public fun publish_technical_report(
         index,
         governance_vault,
         fee_manager,
+        comments_tree_factory_cap,
         artifact_types::technical_report(),
         version_id,
         content_hash,
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        series_metadata_extensions,
+        version_metadata_extensions,
         payment,
         clock_ref,
         ctx,
@@ -505,6 +559,7 @@ public fun publish_dataset(
     index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     description: String,
     format: String,
@@ -516,13 +571,17 @@ public fun publish_dataset(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
+    validate_long_text(&description);
     validate_keywords(&keywords);
+    validate_short_text(&format);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let (series, header, comments_tree) = publish_common(
@@ -531,12 +590,15 @@ public fun publish_dataset(
         index,
         governance_vault,
         fee_manager,
+        comments_tree_factory_cap,
         artifact_types::dataset(),
         version_id,
         content_hash,
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        series_metadata_extensions,
+        version_metadata_extensions,
         payment,
         clock_ref,
         ctx,
@@ -563,6 +625,7 @@ public fun publish_software_release(
     index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     project_name: String,
     version_name: String,
     source_hash: String,
@@ -574,12 +637,19 @@ public fun publish_software_release(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&project_name);
-    assert!(string::length(&version_name) > 0, E_EMPTY_DESCRIPTION);
+    validate_short_text(&version_name);
+    validate_short_text(&source_hash);
+    validate_short_text(&package_hash);
+    validate_medium_text(&changelog);
+    validate_short_text(&license);
+    validate_medium_text(&repository_url);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let (series, header, comments_tree) = publish_common(
@@ -588,12 +658,15 @@ public fun publish_software_release(
         index,
         governance_vault,
         fee_manager,
+        comments_tree_factory_cap,
         artifact_types::software_release(),
         version_id,
         content_hash,
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        series_metadata_extensions,
+        version_metadata_extensions,
         payment,
         clock_ref,
         ctx,
@@ -620,6 +693,7 @@ public fun publish_generic_file(
     index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     title: String,
     description: String,
     filename: String,
@@ -629,13 +703,16 @@ public fun publish_generic_file(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
-    assert!(string::length(&filename) > 0, E_EMPTY_DESCRIPTION);
+    validate_long_text(&description);
+    validate_short_text(&filename);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let (series, header, comments_tree) = publish_common(
@@ -644,12 +721,15 @@ public fun publish_generic_file(
         index,
         governance_vault,
         fee_manager,
+        comments_tree_factory_cap,
         artifact_types::generic_file(),
         version_id,
         content_hash,
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        series_metadata_extensions,
+        version_metadata_extensions,
         payment,
         clock_ref,
         ctx,
@@ -670,6 +750,7 @@ public fun publish_generic_file(
 
 public fun add_preprint_version(
     root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
     series: &mut ArtifactSeries,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -684,20 +765,23 @@ public fun add_preprint_version(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_long_text(&abstract_text);
     validate_authors(&authors);
     validate_keywords(&keywords);
+    validate_short_text(&field);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let header = add_version_common(
-        root, series, governance_vault, fee_manager, artifact_types::preprint(),
+        root, type_registry, series, governance_vault, fee_manager, artifact_types::preprint(),
         version_id,
-        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
     transfer::share_object(PreprintVersionRecord {
         id: version_uid,
@@ -714,6 +798,7 @@ public fun add_preprint_version(
 
 public fun add_blog_post_version(
     root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
     series: &mut ArtifactSeries,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -725,25 +810,28 @@ public fun add_blog_post_version(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&summary) > 0, E_EMPTY_DESCRIPTION);
+    validate_medium_text(&summary);
     validate_tags(&tags);
+    validate_short_text(&language);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let header = add_version_common(
-        root, series, governance_vault, fee_manager, artifact_types::blog_post(),
+        root, type_registry, series, governance_vault, fee_manager, artifact_types::blog_post(),
         version_id,
-        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
     transfer::share_object(BlogPostVersionRecord { id: version_uid, header, title, summary, tags, language });
 }
 
 public fun add_technical_report_version(
     root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
     series: &mut ArtifactSeries,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -758,20 +846,24 @@ public fun add_technical_report_version(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&abstract_text) > 0, E_EMPTY_ABSTRACT);
+    validate_long_text(&abstract_text);
     validate_authors(&authors);
     validate_keywords(&keywords);
+    validate_short_text(&organization);
+    validate_short_text(&report_number);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let header = add_version_common(
-        root, series, governance_vault, fee_manager, artifact_types::technical_report(),
+        root, type_registry, series, governance_vault, fee_manager, artifact_types::technical_report(),
         version_id,
-        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
     transfer::share_object(TechnicalReportVersionRecord {
         id: version_uid,
@@ -788,6 +880,7 @@ public fun add_technical_report_version(
 
 public fun add_dataset_version(
     root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
     series: &mut ArtifactSeries,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -802,19 +895,22 @@ public fun add_dataset_version(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
+    validate_long_text(&description);
     validate_keywords(&keywords);
+    validate_short_text(&format);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let header = add_version_common(
-        root, series, governance_vault, fee_manager, artifact_types::dataset(),
+        root, type_registry, series, governance_vault, fee_manager, artifact_types::dataset(),
         version_id,
-        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
     transfer::share_object(DatasetVersionRecord {
         id: version_uid,
@@ -831,6 +927,7 @@ public fun add_dataset_version(
 
 public fun add_software_release_version(
     root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
     series: &mut ArtifactSeries,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -845,18 +942,24 @@ public fun add_software_release_version(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&project_name);
-    assert!(string::length(&version_name) > 0, E_EMPTY_DESCRIPTION);
+    validate_short_text(&version_name);
+    validate_short_text(&source_hash);
+    validate_short_text(&package_hash);
+    validate_medium_text(&changelog);
+    validate_short_text(&license);
+    validate_medium_text(&repository_url);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let header = add_version_common(
-        root, series, governance_vault, fee_manager, artifact_types::software_release(),
+        root, type_registry, series, governance_vault, fee_manager, artifact_types::software_release(),
         version_id,
-        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
     transfer::share_object(SoftwareReleaseVersionRecord {
         id: version_uid,
@@ -873,6 +976,7 @@ public fun add_software_release_version(
 
 public fun add_generic_file_version(
     root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
     series: &mut ArtifactSeries,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -885,19 +989,21 @@ public fun add_generic_file_version(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ) {
     validate_title(&title);
-    assert!(string::length(&description) > 0, E_EMPTY_DESCRIPTION);
-    assert!(string::length(&filename) > 0, E_EMPTY_DESCRIPTION);
+    validate_long_text(&description);
+    validate_short_text(&filename);
+    validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
     let header = add_version_common(
-        root, series, governance_vault, fee_manager, artifact_types::generic_file(),
+        root, type_registry, series, governance_vault, fee_manager, artifact_types::generic_file(),
         version_id,
-        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, payment, clock_ref, ctx,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
     transfer::share_object(GenericFileVersionRecord {
         id: version_uid,
@@ -1058,6 +1164,26 @@ public fun set_series_status(
     });
 }
 
+public fun update_series_metadata_extensions(
+    series: &mut ArtifactSeries,
+    metadata_extensions: vector<MetadataAttribute>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_current_series(series);
+    assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
+    validate_metadata_extensions(&metadata_extensions);
+    series.metadata_extensions = metadata_extensions;
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
+    event::emit(ArtifactSeriesMetadataUpdatedEvent {
+        series_id: object::id(series),
+        artifact_type: series.artifact_type,
+        updated_by: tx_context::sender(ctx),
+        metadata_count: vector::length(&series.metadata_extensions),
+        updated_at_ms: series.updated_at_ms,
+    });
+}
+
 public fun get_series_id_by_code(index: &TypeIndex, artifact_code: String): ID {
     *table::borrow(&index.code_to_series, artifact_code)
 }
@@ -1067,6 +1193,7 @@ public fun root_paused(root: &PaperProofRoot): bool { root.paused }
 public fun root_governance_vault_id(root: &PaperProofRoot): ID { root.governance_vault_id }
 public fun root_fee_manager_id(root: &PaperProofRoot): ID { root.fee_manager_id }
 public fun root_type_registry_id(root: &PaperProofRoot): ID { root.type_registry_id }
+public fun root_comments_tree_factory_cap_id(root: &PaperProofRoot): ID { root.comments_tree_factory_cap_id }
 
 public fun artifact_type_preprint(): u8 { artifact_types::preprint() }
 public fun artifact_type_blog_post(): u8 { artifact_types::blog_post() }
@@ -1100,12 +1227,24 @@ public fun series_current_version_id(series: &ArtifactSeries): ID { series.curre
 public fun series_comments_tree_id(series: &ArtifactSeries): ID { series.comments_tree_id }
 public fun series_status(series: &ArtifactSeries): u8 { series.status }
 public fun series_ui_status(series: &ArtifactSeries): u8 { series.ui_status }
+public fun series_metadata_count(series: &ArtifactSeries): u64 { vector::length(&series.metadata_extensions) }
+public fun series_metadata_key_at(series: &ArtifactSeries, index: u64): String { vector::borrow(&series.metadata_extensions, index).key }
+public fun series_metadata_value_at(series: &ArtifactSeries, index: u64): String { vector::borrow(&series.metadata_extensions, index).value }
 public fun version_count(series: &ArtifactSeries): u64 { vector::length(&series.version_ids) }
 public fun version_id_at(series: &ArtifactSeries, index: u64): ID { *vector::borrow(&series.version_ids, index) }
 public fun header_series_id(header: &CommonArtifactHeader): ID { header.series_id }
 public fun header_artifact_type(header: &CommonArtifactHeader): u8 { header.artifact_type }
 public fun header_version(header: &CommonArtifactHeader): u64 { header.version }
 public fun header_content_hash(header: &CommonArtifactHeader): String { header.content_hash }
+public fun header_metadata_count(header: &CommonArtifactHeader): u64 { vector::length(&header.metadata_extensions) }
+public fun header_metadata_key_at(header: &CommonArtifactHeader, index: u64): String { vector::borrow(&header.metadata_extensions, index).key }
+public fun header_metadata_value_at(header: &CommonArtifactHeader, index: u64): String { vector::borrow(&header.metadata_extensions, index).value }
+
+public fun metadata_attribute(key: String, value: String): MetadataAttribute {
+    let attribute = MetadataAttribute { key, value };
+    validate_metadata_attribute(&attribute);
+    attribute
+}
 
 public fun preprint_header(record: &PreprintVersionRecord): &CommonArtifactHeader { &record.header }
 public fun blog_post_header(record: &BlogPostVersionRecord): &CommonArtifactHeader { &record.header }
@@ -1120,18 +1259,23 @@ fun publish_common(
     index: &mut TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     artifact_type: u8,
     version_id: ID,
     content_hash: String,
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ): (ArtifactSeries, CommonArtifactHeader, CommentsTree) {
-    assert_publish_context(root, type_registry, index, governance_vault, fee_manager, artifact_type);
+    assert_publish_context(root, type_registry, index, governance_vault, fee_manager, comments_tree_factory_cap, artifact_type);
     validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
+    validate_metadata_extensions(&series_metadata_extensions);
+    validate_metadata_extensions(&version_metadata_extensions);
     governance::collect_artifact_fee(governance_vault, fee_manager, artifact_type, payment, ctx);
 
     let now = clock::timestamp_ms(clock_ref);
@@ -1145,7 +1289,10 @@ fun publish_common(
     table::add(&mut index.code_to_series, artifact_code, series_id);
 
     let comments_tree = comments::new_tree(
+        comments_tree_factory_cap,
         object::id(root),
+        root.governance_vault_id,
+        root.fee_manager_id,
         sender,
         artifact_code,
         series_id,
@@ -1166,6 +1313,7 @@ fun publish_common(
         current_version: 1,
         current_version_id: version_id,
         version_ids,
+        metadata_extensions: series_metadata_extensions,
         comments_tree_id,
         status: SERIES_STATUS_ACTIVE,
         ui_status: UI_NORMAL,
@@ -1183,6 +1331,7 @@ fun publish_common(
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        metadata_extensions: version_metadata_extensions,
         status: VERSION_STATUS_VALID,
         created_at_ms: now,
     };
@@ -1206,6 +1355,7 @@ fun publish_common(
 
 fun add_version_common(
     root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
     series: &mut ArtifactSeries,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -1215,19 +1365,28 @@ fun add_version_common(
     walrus_blob_id: String,
     walrus_blob_object_id: String,
     content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
     payment: Option<Coin<SUI>>,
     clock_ref: &Clock,
     ctx: &mut TxContext,
 ): CommonArtifactHeader {
     assert_current_root(root);
+    assert_current_registry(type_registry);
     assert_current_series(series);
     assert!(!root.paused, E_PAUSED);
+    assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
+    let type_info = table::borrow(&type_registry.types, artifact_type);
+    assert!(type_info.enabled, E_ARTIFACT_TYPE_DISABLED);
     assert!(series.artifact_type == artifact_type, E_INVALID_ARTIFACT_TYPE);
     assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
+    assert!(vector::length(&series.version_ids) < MAX_VERSIONS_PER_SERIES, E_TOO_MANY_VERSIONS);
     assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
     assert!(governance::registry_id(governance_vault) == object::id(root), E_INVALID_GOVERNANCE_VAULT);
     assert!(governance::fee_manager_registry_id(fee_manager) == object::id(root), E_INVALID_FEE_MANAGER);
+    assert!(object::id(governance_vault) == root.governance_vault_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_id(fee_manager) == root.fee_manager_id, E_INVALID_FEE_MANAGER);
     validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
+    validate_metadata_extensions(&version_metadata_extensions);
     governance::collect_artifact_fee(governance_vault, fee_manager, artifact_type, payment, ctx);
 
     let now = clock::timestamp_ms(clock_ref);
@@ -1249,6 +1408,7 @@ fun add_version_common(
         walrus_blob_id,
         walrus_blob_object_id,
         content_type,
+        metadata_extensions: version_metadata_extensions,
         status: VERSION_STATUS_VALID,
         created_at_ms: now,
     };
@@ -1276,6 +1436,7 @@ fun assert_publish_context(
     index: &TypeIndex,
     governance_vault: &GovernanceVault,
     fee_manager: &FeeManager,
+    comments_tree_factory_cap: &TreeFactoryCap,
     artifact_type: u8,
 ) {
     assert_current_root(root);
@@ -1290,6 +1451,10 @@ fun assert_publish_context(
     assert!(info.index_object_id == object::id(index), E_INVALID_INDEX);
     assert!(governance::registry_id(governance_vault) == object::id(root), E_INVALID_GOVERNANCE_VAULT);
     assert!(governance::fee_manager_registry_id(fee_manager) == object::id(root), E_INVALID_FEE_MANAGER);
+    assert!(object::id(governance_vault) == root.governance_vault_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_id(fee_manager) == root.fee_manager_id, E_INVALID_FEE_MANAGER);
+    assert!(comments::tree_factory_cap_id(comments_tree_factory_cap) == root.comments_tree_factory_cap_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::tree_factory_cap_registry_id(comments_tree_factory_cap) == object::id(root), E_INVALID_COMMENTS_TREE);
 }
 
 fun assert_admin(
@@ -1398,6 +1563,18 @@ fun validate_title(title: &String) {
     validation::title(title)
 }
 
+fun validate_long_text(text: &String) {
+    validation::long_text(text)
+}
+
+fun validate_medium_text(text: &String) {
+    validation::medium_text(text)
+}
+
+fun validate_short_text(text: &String) {
+    validation::short_text(text)
+}
+
 fun validate_authors(authors: &vector<String>) {
     validation::authors(authors)
 }
@@ -1408,6 +1585,33 @@ fun validate_keywords(keywords: &vector<String>) {
 
 fun validate_tags(tags: &vector<String>) {
     validation::tags(tags)
+}
+
+fun validate_metadata_extensions(metadata_extensions: &vector<MetadataAttribute>) {
+    let len = vector::length(metadata_extensions);
+    assert!(len <= MAX_METADATA_ATTRIBUTES, E_TOO_MANY_METADATA_ATTRIBUTES);
+
+    let mut i = 0;
+    while (i < len) {
+        let attribute = vector::borrow(metadata_extensions, i);
+        validate_metadata_attribute(attribute);
+
+        let mut j = i + 1;
+        while (j < len) {
+            assert!(
+                attribute.key != vector::borrow(metadata_extensions, j).key,
+                E_DUPLICATE_METADATA_KEY,
+            );
+            j = j + 1;
+        };
+        i = i + 1;
+    };
+}
+
+fun validate_metadata_attribute(attribute: &MetadataAttribute) {
+    assert!(string::length(&attribute.key) > 0, E_EMPTY_METADATA_KEY);
+    assert!(string::length(&attribute.key) <= MAX_METADATA_KEY_BYTES, E_METADATA_TEXT_TOO_LONG);
+    assert!(string::length(&attribute.value) < MAX_METADATA_VALUE_BYTES + 1, E_METADATA_TEXT_TOO_LONG);
 }
 
 fun make_artifact_code(artifact_type: u8, number: u64): String {

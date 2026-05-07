@@ -25,6 +25,7 @@ PaperProof contract system.
 - `PaperProofRoot`:
 - `TypeRegistry`:
 - `FeeManager`:
+- `TreeFactoryCap`:
 - `TypeIndex` for `preprint`:
 - `TypeIndex` for `blog_post`:
 - `TypeIndex` for `technical_report`:
@@ -64,12 +65,15 @@ PaperProof contract system.
 - [ ] `GovernanceVault.registry_id` equals `PaperProofRoot`
 - [ ] `GovernanceConfig.registry_id` equals `PaperProofRoot`
 - [ ] `FeeManager.registry_id` equals `PaperProofRoot`
+- [ ] `TreeFactoryCap.registry_id` equals `PaperProofRoot`
+- [ ] `PaperProofRoot.comments_tree_factory_cap_id` equals `TreeFactoryCap`
 - [ ] `TypeRegistry.registry_id` equals `PaperProofRoot`
 - [ ] every `TypeInfo.index_object_id` matches the expected `TypeIndex`
 
 ## Smoke Test Transactions
 
 - Publish artifact:
+- Verify official `TreeFactoryCap` used:
 - Add artifact version:
 - Add on-chain comment:
 - Add blob-backed comment:
@@ -86,4 +90,3 @@ PaperProof contract system.
 - Official hostname:
 - Walrus site:
 - Package/object configuration reviewed by:
-

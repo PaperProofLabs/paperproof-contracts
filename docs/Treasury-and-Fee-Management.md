@@ -32,6 +32,12 @@ Both publishing and comments verify that the supplied `FeeManager` belongs to
 the same registry as the official protocol root. A foreign fee manager cannot be
 used to bypass fees.
 
+Publishing also checks that the supplied `FeeManager` object ID equals the
+official `fee_manager_id` recorded on `PaperProofRoot`, and that the supplied
+`GovernanceVault` object ID equals the official vault ID. Comments tree creation
+is similarly bounded by the official `TreeFactoryCap` created during publishing
+initialization.
+
 ## Fee Recipient
 
 `GovernanceVault` stores:
@@ -93,7 +99,7 @@ The current model supports:
 - proposal-gated artifact fee changes
 - proposal-gated comments fee changes
 - immediate routing of fee revenue
-- foreign vault/fee manager rejection
+- foreign vault, fee manager, and comments tree factory rejection
 
 It does not yet support:
 

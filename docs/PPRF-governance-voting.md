@@ -62,6 +62,7 @@ Currently implemented executable actions are:
 - `ACTION_ACTIVATE_ARTIFACT_TYPE`
 - `ACTION_SET_GOVERNANCE_ACTION_ENABLED`
 - `ACTION_SET_DIRECT_AUTHORITY_MODE`
+- `ACTION_CANCEL_OPERATOR_TRANSFER`
 
 These proposals are intended to produce enforceable protocol changes.
 
@@ -340,6 +341,7 @@ const ACTION_SET_ARTIFACT_FEE_LEVEL: u8 = 10;
 const ACTION_ACTIVATE_ARTIFACT_TYPE: u8 = 11;
 const ACTION_SET_GOVERNANCE_ACTION_ENABLED: u8 = 12;
 const ACTION_SET_DIRECT_AUTHORITY_MODE: u8 = 13;
+const ACTION_CANCEL_OPERATOR_TRANSFER: u8 = 14;
 ```
 
 ### Signaling Actions
@@ -377,6 +379,9 @@ execution checks that the supplied config id matches the vault binding. This
 prevents duplicate governance configs from creating parallel active-proposal
 state or bypassing disabled-action settings.
 
+Only the vault's `governance_authority` or recorded `upgrade_authority` can
+create the governance config.
+
 ### Share Governance Config
 
 ```move
@@ -407,6 +412,7 @@ This function aborts if:
 - proposal creation is paused; or
 - another proposal is already active.
 - the proposer stake is below the current proposer threshold.
+- the action type is disabled or the known executable action payload is invalid.
 
 The proposal end epoch is computed from the current
 `GovernanceConfig.proposal_duration_epochs` value.
@@ -563,7 +569,10 @@ governance decisions.
 
 Known executable action payloads are also validated at proposal creation time.
 Invalid fee levels, boolean fields, direct-authority modes, action-enable
-targets, and required nonzero addresses are rejected before voting begins.
+targets, proposal-duration values, and required nonzero addresses are rejected
+before voting begins. Artifact-action payload validation stays inside
+`governance_voting` and uses pure helpers from `governance`; it does not import
+`publishing`, preserving the package dependency direction.
 
 The enabling path is itself a governance action:
 
@@ -572,6 +581,15 @@ ACTION_SET_GOVERNANCE_ACTION_ENABLED
 ```
 
 It can enable or disable other known actions, but it cannot disable itself.
+
+`ACTION_CANCEL_OPERATOR_TRANSFER` has a dedicated execution entrypoint:
+
+```move
+governance_voting::execute_cancel_operator_transfer_proposal
+```
+
+It requires the pending transfer objects at execution time and is intentionally
+not routed through the generic `execute_proposal` path.
 
 ### Execution Validity Window
 

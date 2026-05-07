@@ -15,6 +15,7 @@ publishing protocol to users.
 - [ ] `PaperProofRoot` object ID recorded
 - [ ] `TypeRegistry` object ID recorded
 - [ ] `FeeManager` object ID recorded
+- [ ] `TreeFactoryCap` object ID recorded
 - [ ] `GovernanceVault` object ID recorded
 - [ ] `GovernanceConfig` object ID recorded
 - [ ] all six initial `TypeIndex` object IDs recorded
@@ -24,6 +25,8 @@ publishing protocol to users.
 - [ ] `GovernanceVault.registry_id == PaperProofRoot ID`
 - [ ] `GovernanceConfig.registry_id == PaperProofRoot ID`
 - [ ] `FeeManager.registry_id == PaperProofRoot ID`
+- [ ] `TreeFactoryCap.registry_id == PaperProofRoot ID`
+- [ ] `PaperProofRoot.comments_tree_factory_cap_id == TreeFactoryCap ID`
 - [ ] `TypeRegistry.registry_id == PaperProofRoot ID`
 - [ ] every `TypeInfo.index_object_id` points to the expected `TypeIndex`
 
@@ -43,6 +46,7 @@ publishing protocol to users.
 - [ ] verify `ArtifactSeries` created
 - [ ] verify typed `VersionRecord` created
 - [ ] verify `TypeIndex` code lookup returns the series ID
+- [ ] verify publish path uses the official `TreeFactoryCap`
 - [ ] verify official `CommentsTree` created and bound to the series
 - [ ] add a second version
 - [ ] verify comments tree ID remains unchanged
@@ -68,14 +72,14 @@ publishing protocol to users.
 ## Frontend / Indexer
 
 - [ ] frontend points to current package IDs
-- [ ] frontend uses `PaperProofRoot`, `TypeRegistry`, `FeeManager`, and
-      `TypeIndex` object IDs
+- [ ] frontend uses `PaperProofRoot`, `TypeRegistry`, `FeeManager`,
+      `TreeFactoryCap`, and `TypeIndex` object IDs
 - [ ] frontend reads artifact type names through current constants/getters
 - [ ] indexer listens for `ArtifactPublishedEvent`
 - [ ] indexer listens for `ArtifactVersionAddedEvent`
 - [ ] indexer listens for artifact type and artifact fee events
-- [ ] frontend and indexer use `PaperProofRoot`, `TypeRegistry`, and
-      `ArtifactSeries`
+- [ ] frontend and indexer use `PaperProofRoot`, `TypeRegistry`,
+      `TreeFactoryCap`, and `ArtifactSeries`
 
 ## Documentation
 

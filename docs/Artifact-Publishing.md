@@ -13,6 +13,7 @@ The main model is:
 - `TypeRegistry`: artifact-type registry and activation state.
 - `TypeIndex`: per-type code index.
 - `ArtifactSeries`: stable identity for one work.
+- `MetadataAttribute`: optional key/value extension metadata.
 - strong typed `VersionRecord` objects: immutable snapshots for each published
   version.
 
@@ -63,6 +64,7 @@ license indexes. Those belong in events and off-chain indexers for now.
 - `governance_vault_id`
 - `fee_manager_id`
 - `type_registry_id`
+- `comments_tree_factory_cap_id`
 - protocol version and pause flag
 
 It does not store one hardcoded field per artifact type.
@@ -91,6 +93,7 @@ Every typed record contains a shared header:
 - `walrus_blob_id`
 - `walrus_blob_object_id`
 - `content_type`
+- `metadata_extensions`
 - `status`
 - `created_at_ms`
 
@@ -103,10 +106,70 @@ The concrete record types add only necessary type-specific fields:
 - `SoftwareReleaseVersionRecord`
 - `GenericFileVersionRecord`
 
+## Input Bounds
+
+Publishing entrypoints validate user-supplied text and vector fields before
+creating objects:
+
+- title, short text, content hash, Walrus blob ID, and Walrus blob object ID:
+  `128` to `256` bytes depending on the field
+- content type: `64` bytes
+- medium text: `1024` bytes
+- long text: `4096` bytes
+- authors: at least one author, at most `20`
+- keywords: at most `10`
+- tags: at most `20`
+- each vector item: non-empty and at most `128` bytes
+- metadata extensions: fewer than `5` attributes, no duplicate keys
+- metadata key: non-empty and at most `64` bytes
+- metadata value: fewer than `512` bytes
+
+## Metadata Extensions
+
+`MetadataAttribute` is a small optional extension record:
+
+```move
+public struct MetadataAttribute has copy, drop, store {
+    key: String,
+    value: String,
+}
+```
+
+`ArtifactSeries.metadata_extensions` stores series-level metadata. It is
+optional and may remain empty for most artifacts. First-publication entrypoints
+accept `series_metadata_extensions`, and the series owner can later replace the
+series metadata through:
+
+```move
+publishing::update_series_metadata_extensions
+```
+
+Every successful series metadata update emits
+`ArtifactSeriesMetadataUpdatedEvent`.
+
+`CommonArtifactHeader.metadata_extensions` stores version-level metadata.
+First-publication entrypoints and add-version entrypoints accept
+`version_metadata_extensions`. After a version record is created, its metadata
+is immutable because version records are immutable shared snapshots and no
+version metadata update function is exposed.
+
 ## Comments Binding
 
 Publishing automatically creates one official `CommentsTree` when an artifact
 series is first published.
+
+The tree must be created through the official shared
+`comments::TreeFactoryCap` recorded on `PaperProofRoot`. First-publication
+entrypoints therefore require the caller to supply:
+
+- the official `GovernanceVault`
+- the official `FeeManager`
+- the official `TreeFactoryCap`
+
+The publishing package verifies that these objects match the IDs recorded on
+`PaperProofRoot` before collecting fees or creating the tree. This prevents a
+frontend or external caller from publishing through a forged comments tree
+factory, foreign fee manager, or foreign vault.
 
 The tree is bound to the series, not to a single version:
 
@@ -115,9 +178,9 @@ The tree is bound to the series, not to a single version:
 - `target_key`
 - `owner`
 
-`ArtifactSeries.comments_tree_id` is the official binding. External packages
-may create similar trees, but the publishing protocol recognizes only the tree
-recorded on the series.
+`ArtifactSeries.comments_tree_id` is the official per-series binding. External
+packages cannot call `comments::new_tree` without a valid `TreeFactoryCap`, and
+the publishing protocol recognizes only the tree recorded on the series.
 
 Owner transfer must be called with the official comments tree. The publishing
 entrypoint verifies that the supplied tree ID equals
@@ -131,6 +194,14 @@ while the series is `ACTIVE`.
 Locked or hidden series remain readable, but they cannot receive new
 `VersionRecord` objects until governance/operator-controlled status management
 returns them to `ACTIVE`.
+
+Version additions are also capped at `168` versions per series. This bounds the
+on-chain `version_ids` vector while preserving a long publishing history for a
+single work.
+
+Disabled artifact types block both first publication and later version
+additions. Re-enabling the type through governance restores the normal
+publishing path for active series.
 
 ## Fees
 
@@ -172,6 +243,10 @@ publishing -> governance
 ```
 
 and avoids a package dependency cycle.
+
+Executable proposal payloads are validated when proposals are created. The
+validation lives in `governance_voting` and uses pure validation helpers from
+`governance`, so publishing-specific proposal execution remains cycle-free.
 
 ## Adding A New Built-In Type
 

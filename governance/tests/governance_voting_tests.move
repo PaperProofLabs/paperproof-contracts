@@ -92,6 +92,23 @@ fun test_duplicate_governance_config_is_rejected() {
 }
 
 #[test]
+#[expected_failure(abort_code = 30, location = paperproof_governance::governance_voting)]
+fun test_non_authority_cannot_initialize_governance_config() {
+    let mut scenario = ts::begin(VOTER1);
+    let (mut vault, permit) = governance::new_vault(
+        object::id_from_address(@0x49A),
+        ADMIN,
+        OPERATOR,
+        ts::ctx(&mut scenario),
+    );
+    let config = voting::new_governance_config(&mut vault, ts::ctx(&mut scenario));
+    voting::share_governance_config(config);
+    transfer::public_transfer(permit, OPERATOR);
+    governance::share_vault(vault);
+    ts::end(scenario);
+}
+
+#[test]
 fun test_create_execute_and_claim_fee_proposal() {
     let mut scenario = ts::begin(ADMIN);
     init_vault_and_config(&mut scenario, object::id_from_address(@0x401));

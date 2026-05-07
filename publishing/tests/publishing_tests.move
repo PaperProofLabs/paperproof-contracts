@@ -3,7 +3,7 @@ module paperproof_publishing::publishing_tests;
 
 use std::string;
 
-use paperproof_comments::comments::{Self as comments, CommentsTree};
+use paperproof_comments::comments::{Self as comments, CommentsTree, TreeFactoryCap};
 use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault, OperatorPermit};
 use paperproof_governance::governance_voting::{Self as voting, GovernanceConfig, Proposal};
 use paperproof_publishing::publishing::{
@@ -12,6 +12,7 @@ use paperproof_publishing::publishing::{
     BlogPostVersionRecord,
     DatasetVersionRecord,
     GenericFileVersionRecord,
+    MetadataAttribute,
     PaperProofRoot,
     PreprintVersionRecord,
     SoftwareReleaseVersionRecord,
@@ -35,9 +36,24 @@ fun common_hash(): string::String { string::utf8(b"sha256:test") }
 fun common_blob(): string::String { string::utf8(b"walrus_blob") }
 fun common_blob_object(): string::String { string::utf8(b"walrus_blob_object") }
 fun common_content_type(): string::String { string::utf8(b"application/octet-stream") }
+fun no_metadata(): vector<MetadataAttribute> { vector[] }
+
+fun metadata(key: vector<u8>, value: vector<u8>): MetadataAttribute {
+    publishing::metadata_attribute(string::utf8(key), string::utf8(value))
+}
 
 fun mint_votes(amount: u64, scenario: &mut ts::Scenario): Coin<PPRF> {
     coin::mint_for_testing<PPRF>(amount, ts::ctx(scenario))
+}
+
+fun repeated_string(byte: u8, len: u64): string::String {
+    let mut bytes = vector[];
+    let mut i = 0;
+    while (i < len) {
+        vector::push_back(&mut bytes, byte);
+        i = i + 1;
+    };
+    string::utf8(bytes)
 }
 
 fun advance_beyond_voting_period(scenario: &mut ts::Scenario, sender: address) {
@@ -121,6 +137,7 @@ fun test_publish_all_builtin_artifact_types() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, preprint_index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
 
@@ -130,6 +147,7 @@ fun test_publish_all_builtin_artifact_types() {
             &mut index,
             &vault,
             &fee_manager,
+            &tree_factory_cap,
             string::utf8(b"Preprint title"),
             string::utf8(b"Preprint abstract"),
             vector[string::utf8(b"Alice")],
@@ -141,7 +159,7 @@ fun test_publish_all_builtin_artifact_types() {
             common_blob(),
             common_blob_object(),
             string::utf8(b"application/pdf"),
-            option::none(),
+            no_metadata(), no_metadata(), option::none(),
             &clock_ref,
             ts::ctx(&mut scenario),
         );
@@ -154,6 +172,7 @@ fun test_publish_all_builtin_artifact_types() {
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
 
         ts::next_tx(&mut scenario, USER1);
@@ -175,6 +194,7 @@ fun test_publish_all_builtin_artifact_types() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut blog_index = ts::take_shared_by_id<TypeIndex>(&scenario, blog_index_id);
         let mut report_index = ts::take_shared_by_id<TypeIndex>(&scenario, report_index_id);
         let mut dataset_index = ts::take_shared_by_id<TypeIndex>(&scenario, dataset_index_id);
@@ -183,31 +203,31 @@ fun test_publish_all_builtin_artifact_types() {
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
 
         publishing::publish_blog_post(
-            &root, &registry, &mut blog_index, &vault, &fee_manager,
+            &root, &registry, &mut blog_index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Blog title"), string::utf8(b"Blog summary"), vector[string::utf8(b"tag")], string::utf8(b"en"),
-            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         publishing::publish_technical_report(
-            &root, &registry, &mut report_index, &vault, &fee_manager,
+            &root, &registry, &mut report_index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Report title"), string::utf8(b"Report abstract"), vector[string::utf8(b"Alice")],
             string::utf8(b"PaperProof Labs"), string::utf8(b"TR-1"), vector[string::utf8(b"protocol")], string::utf8(b"CC-BY"),
-            common_hash(), common_blob(), common_blob_object(), string::utf8(b"application/pdf"), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), string::utf8(b"application/pdf"), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         publishing::publish_dataset(
-            &root, &registry, &mut dataset_index, &vault, &fee_manager,
+            &root, &registry, &mut dataset_index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Dataset title"), string::utf8(b"Dataset description"), string::utf8(b"csv"), 2, 1000, string::utf8(b"CC0"), vector[string::utf8(b"data")],
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         publishing::publish_software_release(
-            &root, &registry, &mut release_index, &vault, &fee_manager,
+            &root, &registry, &mut release_index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Project"), string::utf8(b"v1.0.0"), string::utf8(b"source_hash"), string::utf8(b"package_hash"),
             string::utf8(b"Initial release"), string::utf8(b"MIT"), string::utf8(b"https://example.com/repo"),
-            common_hash(), common_blob(), common_blob_object(), string::utf8(b"application/zip"), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), string::utf8(b"application/zip"), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         publishing::publish_generic_file(
-            &root, &registry, &mut file_index, &vault, &fee_manager,
+            &root, &registry, &mut file_index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"File title"), string::utf8(b"File description"), string::utf8(b"archive.zip"), 1000, string::utf8(b"CC-BY"),
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
 
         clock::destroy_for_testing(clock_ref);
@@ -215,6 +235,7 @@ fun test_publish_all_builtin_artifact_types() {
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(blog_index);
         ts::return_shared(report_index);
         ts::return_shared(dataset_index);
@@ -262,18 +283,20 @@ fun test_add_version_and_transfer_owner_keep_comments_tree() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_generic_file(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -285,24 +308,28 @@ fun test_add_version_and_transfer_owner_keep_comments_tree() {
     ts::next_tx(&mut scenario, USER1);
     {
         let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
         let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let original_tree_id = publishing::series_comments_tree_id(&series);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::add_generic_file_version(
-            &root, &mut series, &vault, &fee_manager,
+            &root, &registry, &mut series, &vault, &fee_manager,
             string::utf8(b"File v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
-            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         assert!(publishing::series_current_version(&series) == 2, 20);
         assert!(publishing::version_count(&series) == 2, 21);
         assert!(publishing::series_comments_tree_id(&series) == original_tree_id, 22);
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
+        ts::return_shared(registry);
         ts::return_shared(series);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
     };
 
     ts::next_tx(&mut scenario, USER1);
@@ -322,8 +349,7 @@ fun test_add_version_and_transfer_owner_keep_comments_tree() {
 }
 
 #[test]
-#[expected_failure(abort_code = 23, location = paperproof_publishing::publishing)]
-fun test_transfer_owner_requires_official_comments_tree() {
+fun test_metadata_extensions_on_publish_add_version_and_series_update() {
     let mut scenario = ts::begin(ADMIN);
     publishing::init_for_testing(ts::ctx(&mut scenario));
 
@@ -340,18 +366,23 @@ fun test_transfer_owner_requires_official_comments_tree() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_generic_file(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"doi", b"10.1234/paperproof")],
+            vector[metadata(b"version_note", b"first")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -362,10 +393,236 @@ fun test_transfer_owner_requires_official_comments_tree() {
 
     ts::next_tx(&mut scenario, USER1);
     {
+        let series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
+        let record = ts::take_shared<GenericFileVersionRecord>(&scenario);
+        assert!(publishing::series_metadata_count(&series) == 1, 30);
+        assert!(publishing::series_metadata_key_at(&series, 0) == string::utf8(b"doi"), 31);
+        assert!(publishing::series_metadata_value_at(&series, 0) == string::utf8(b"10.1234/paperproof"), 32);
+        assert!(publishing::header_metadata_count(publishing::generic_file_header(&record)) == 1, 33);
+        assert!(publishing::header_metadata_key_at(publishing::generic_file_header(&record), 0) == string::utf8(b"version_note"), 34);
+        assert!(publishing::header_metadata_value_at(publishing::generic_file_header(&record), 0) == string::utf8(b"first"), 35);
+        ts::return_shared(series);
+        ts::return_shared(record);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::add_generic_file_version(
+            &root, &registry, &mut series, &vault, &fee_manager,
+            string::utf8(b"File v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(),
+            vector[metadata(b"version_note", b"second")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::update_series_metadata_extensions(
+            &mut series,
+            vector[metadata(b"doi", b"10.5678/updated"), metadata(b"license_uri", b"https://example.com/license")],
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_metadata_count(&series) == 2, 36);
+        assert!(publishing::series_metadata_value_at(&series, 0) == string::utf8(b"10.5678/updated"), 37);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 26, location = paperproof_publishing::publishing)]
+fun test_metadata_extensions_reject_more_than_four_attributes() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let vault = ts::take_shared<GovernanceVault>(&scenario);
+    let fee_manager = ts::take_shared<FeeManager>(&scenario);
+    let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+    let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+    let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+    publishing::publish_generic_file(
+        &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
+        string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+        common_hash(), common_blob(), common_blob_object(), common_content_type(),
+        vector[
+            metadata(b"k1", b"v1"),
+            metadata(b"k2", b"v2"),
+            metadata(b"k3", b"v3"),
+            metadata(b"k4", b"v4"),
+            metadata(b"k5", b"v5"),
+        ],
+        no_metadata(),
+        option::none(), &clock_ref, ts::ctx(&mut scenario),
+    );
+    abort 999
+}
+
+#[test]
+#[expected_failure(abort_code = 29, location = paperproof_publishing::publishing)]
+fun test_metadata_extensions_reject_duplicate_keys() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let vault = ts::take_shared<GovernanceVault>(&scenario);
+    let fee_manager = ts::take_shared<FeeManager>(&scenario);
+    let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+    let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+    let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+    publishing::publish_generic_file(
+        &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
+        string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+        common_hash(), common_blob(), common_blob_object(), common_content_type(),
+        vector[metadata(b"doi", b"v1"), metadata(b"doi", b"v2")],
+        no_metadata(),
+        option::none(), &clock_ref, ts::ctx(&mut scenario),
+    );
+    abort 999
+}
+
+#[test]
+#[expected_failure(abort_code = 21, location = paperproof_publishing::publishing)]
+fun test_non_owner_cannot_update_series_metadata_extensions() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+        let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
+        ts::return_shared(index);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    let index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+    let series_id = publishing::get_series_id_by_code(&index, string::utf8(b"PaperProof-generic_file-1"));
+    ts::return_shared(index);
+
+    ts::next_tx(&mut scenario, USER2);
+    let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
+    let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+    publishing::update_series_metadata_extensions(
+        &mut series,
+        vector[metadata(b"doi", b"10.5678/updated")],
+        &clock_ref,
+        ts::ctx(&mut scenario),
+    );
+    abort 999
+}
+
+#[test]
+#[expected_failure(abort_code = 24, location = paperproof_comments::comments)]
+fun test_cannot_forge_comments_tree_with_wrong_factory_cap_binding() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+        let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
+        ts::return_shared(index);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    let index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+    let series_id = publishing::get_series_id_by_code(&index, string::utf8(b"PaperProof-generic_file-1"));
+    ts::return_shared(index);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         let mut fake_tree = comments::new_tree(
-            object::id_from_address(@0xFA),
+            &tree_factory_cap,
+            object::id(&root),
+            publishing::root_governance_vault_id(&root),
+            object::id_from_address(@0xFC),
             USER1,
             publishing::series_artifact_code(&series),
             series_id,
@@ -376,6 +633,8 @@ fun test_transfer_owner_requires_official_comments_tree() {
         publishing::transfer_artifact_owner(&mut series, &mut fake_tree, USER2, &clock_ref, ts::ctx(&mut scenario));
         comments::share_tree(fake_tree);
         clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(series);
     };
 
@@ -401,18 +660,20 @@ fun test_locked_series_cannot_add_version() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_generic_file(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -424,6 +685,7 @@ fun test_locked_series_cannot_add_version() {
     ts::next_tx(&mut scenario, ADMIN);
     {
         let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
         let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let permit = ts::take_from_sender<OperatorPermit>(&scenario);
@@ -434,6 +696,7 @@ fun test_locked_series_cannot_add_version() {
         clock::destroy_for_testing(clock_ref);
         transfer::public_transfer(permit, ADMIN);
         ts::return_shared(root);
+        ts::return_shared(registry);
         ts::return_shared(series);
         ts::return_shared(vault);
     };
@@ -441,20 +704,24 @@ fun test_locked_series_cannot_add_version() {
     ts::next_tx(&mut scenario, USER1);
     {
         let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
         let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::add_generic_file_version(
-            &root, &mut series, &vault, &fee_manager,
+            &root, &registry, &mut series, &vault, &fee_manager,
             string::utf8(b"File v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
-            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
+        ts::return_shared(registry);
         ts::return_shared(series);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
     };
 
     ts::end(scenario);
@@ -506,19 +773,115 @@ fun test_disabled_artifact_type_rejects_publish() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_blog_post(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Blog"), string::utf8(b"Summary"), vector[], string::utf8(b"en"),
-            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 6, location = paperproof_publishing::publishing)]
+fun test_disabled_artifact_type_rejects_existing_series_version() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+        let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
+        ts::return_shared(index);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    let index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+    let series_id = publishing::get_series_id_by_code(&index, string::utf8(b"PaperProof-generic_file-1"));
+    ts::return_shared(index);
+
+    init_governance_config(&mut scenario);
+    let proposal_object_id = create_and_finalize_publishing_proposal(
+        &mut scenario,
+        voting::action_set_artifact_type_enabled(),
+        publishing::artifact_type_generic_file() as u64,
+        0,
+    );
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let mut registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared_by_id<Proposal>(&scenario, proposal_object_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::execute_artifact_type_enabled_proposal(
+            &root, &mut registry, &vault, &mut config, &mut proposal, &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::add_generic_file_version(
+            &root, &registry, &mut series, &vault, &fee_manager,
+            string::utf8(b"File v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
     };
 
     ts::end(scenario);
@@ -549,6 +912,7 @@ fun test_artifact_type_fee_level_requires_payment() {
         let root = ts::take_shared<PaperProofRoot>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut config = ts::take_shared<GovernanceConfig>(&scenario);
         let mut proposal = ts::take_shared_by_id<Proposal>(&scenario, proposal_object_id);
         publishing::execute_artifact_fee_level_proposal(
@@ -558,6 +922,7 @@ fun test_artifact_type_fee_level_requires_payment() {
         ts::return_shared(root);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(config);
         ts::return_shared(proposal);
     };
@@ -568,19 +933,21 @@ fun test_artifact_type_fee_level_requires_payment() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let payment = coin::mint_for_testing<SUI>(10_000, ts::ctx(&mut scenario));
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_dataset(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Paid dataset"), string::utf8(b"Description"), string::utf8(b"csv"), 1, 100, string::utf8(b"CC0"), vector[],
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::some(payment), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::some(payment), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -642,6 +1009,7 @@ fun test_disabled_type_can_be_reenabled_and_published() {
         let mut registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut config = ts::take_shared<GovernanceConfig>(&scenario);
         let mut proposal = ts::take_shared_by_id<Proposal>(&scenario, enable_proposal_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
@@ -657,6 +1025,7 @@ fun test_disabled_type_can_be_reenabled_and_published() {
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(config);
         ts::return_shared(proposal);
     };
@@ -667,13 +1036,14 @@ fun test_disabled_type_can_be_reenabled_and_published() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let payment = coin::mint_for_testing<SUI>(10_000, ts::ctx(&mut scenario));
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_blog_post(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Reenabled blog"), string::utf8(b"Summary"), vector[], string::utf8(b"en"),
-            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), option::some(payment), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), no_metadata(), no_metadata(), option::some(payment), &clock_ref, ts::ctx(&mut scenario),
         );
         assert!(publishing::index_next_number(&index) == 2, 42);
         clock::destroy_for_testing(clock_ref);
@@ -681,6 +1051,7 @@ fun test_disabled_type_can_be_reenabled_and_published() {
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -706,18 +1077,20 @@ fun test_non_owner_cannot_add_artifact_version() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_generic_file(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -732,17 +1105,21 @@ fun test_non_owner_cannot_add_artifact_version() {
         let mut series = ts::take_shared_by_id<ArtifactSeries>(&scenario, series_id);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
         publishing::add_generic_file_version(
-            &root, &mut series, &vault, &fee_manager,
+            &root, &registry, &mut series, &vault, &fee_manager,
             string::utf8(b"Bad v2"), string::utf8(b"Description"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
-            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
+        ts::return_shared(registry);
         ts::return_shared(series);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
     };
 
     ts::end(scenario);
@@ -767,18 +1144,20 @@ fun test_wrong_type_index_rejects_publish() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut wrong_index = ts::take_shared_by_id<TypeIndex>(&scenario, preprint_index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_blog_post(
-            &root, &registry, &mut wrong_index, &vault, &fee_manager,
+            &root, &registry, &mut wrong_index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Wrong index"), string::utf8(b"Summary"), vector[], string::utf8(b"en"),
-            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(wrong_index);
     };
 
@@ -811,6 +1190,7 @@ fun test_artifact_fee_requires_payment_coin() {
         let root = ts::take_shared<PaperProofRoot>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut config = ts::take_shared<GovernanceConfig>(&scenario);
         let mut proposal = ts::take_shared_by_id<Proposal>(&scenario, proposal_object_id);
         publishing::execute_artifact_fee_level_proposal(
@@ -819,6 +1199,7 @@ fun test_artifact_fee_requires_payment_coin() {
         ts::return_shared(root);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(config);
         ts::return_shared(proposal);
     };
@@ -829,18 +1210,20 @@ fun test_artifact_fee_requires_payment_coin() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_dataset(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b"Unpaid dataset"), string::utf8(b"Description"), string::utf8(b"csv"), 1, 100, string::utf8(b"CC0"), vector[],
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -866,18 +1249,20 @@ fun test_empty_title_rejected_before_publish() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_generic_file(
-            &root, &registry, &mut index, &vault, &fee_manager,
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
             string::utf8(b""), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 
@@ -894,11 +1279,12 @@ fun test_foreign_fee_manager_cannot_collect_artifact_fee() {
     let root = ts::take_shared<PaperProofRoot>(&scenario);
     let registry = ts::take_shared<TypeRegistry>(&scenario);
     let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    let root_id = object::id(&root);
     ts::return_shared(registry);
     ts::return_shared(root);
 
     let foreign_fee_manager_id = {
-        let foreign_fee_manager = governance::new_fee_manager(object::id_from_address(@0x999), ts::ctx(&mut scenario));
+        let foreign_fee_manager = governance::new_fee_manager(root_id, ts::ctx(&mut scenario));
         let id = governance::fee_manager_id(&foreign_fee_manager);
         governance::share_fee_manager(foreign_fee_manager);
         id
@@ -910,18 +1296,107 @@ fun test_foreign_fee_manager_cannot_collect_artifact_fee() {
         let registry = ts::take_shared<TypeRegistry>(&scenario);
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let foreign_fee_manager = ts::take_shared_by_id<FeeManager>(&scenario, foreign_fee_manager_id);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
         let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
         publishing::publish_generic_file(
-            &root, &registry, &mut index, &vault, &foreign_fee_manager,
+            &root, &registry, &mut index, &vault, &foreign_fee_manager, &tree_factory_cap,
             string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
-            common_hash(), common_blob(), common_blob_object(), common_content_type(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
         );
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(root);
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(foreign_fee_manager);
+        ts::return_shared(tree_factory_cap);
+        ts::return_shared(index);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 8, location = paperproof_publishing::publishing)]
+fun test_same_registry_fake_vault_cannot_publish() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    let root_id = object::id(&root);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    let fake_vault_id = {
+        let (fake_vault, fake_permit) = governance::new_vault(root_id, ADMIN, ADMIN, ts::ctx(&mut scenario));
+        let id = object::id(&fake_vault);
+        governance::share_vault(fake_vault);
+        transfer::public_transfer(fake_permit, ADMIN);
+        id
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let fake_vault = ts::take_shared_by_id<GovernanceVault>(&scenario, fake_vault_id);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+        let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &mut index, &fake_vault, &fee_manager, &tree_factory_cap,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(fake_vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
+        ts::return_shared(index);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 21, location = paperproof_publishing::validation)]
+fun test_overlong_publishing_field_rejected() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let index_id = publishing::type_index_object_id(&registry, publishing::artifact_type_generic_file());
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let tree_factory_cap = ts::take_shared<TreeFactoryCap>(&scenario);
+        let mut index = ts::take_shared_by_id<TypeIndex>(&scenario, index_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &mut index, &vault, &fee_manager, &tree_factory_cap,
+            repeated_string(65, 257), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(tree_factory_cap);
         ts::return_shared(index);
     };
 

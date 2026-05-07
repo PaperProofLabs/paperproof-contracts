@@ -58,6 +58,7 @@ Some executable actions are handled entirely inside the governance package by
 - `ACTION_SET_PROPOSAL_DURATION_EPOCHS`
 - `ACTION_SET_GOVERNANCE_ACTION_ENABLED`
 - `ACTION_SET_DIRECT_AUTHORITY_MODE`
+- `ACTION_CANCEL_OPERATOR_TRANSFER`
 
 These affect `GovernanceVault`, `GovernanceConfig`, or the operator handoff
 flow. They do not require a cross-package execution adapter.
@@ -66,9 +67,15 @@ flow. They do not require a cross-package execution adapter.
 
 `GovernanceConfig` maintains an action availability table.
 
-Creating or executing a proposal requires the target action to be enabled. This
-lets the package contain code for a protocol capability before that capability
-is available as a live governance action.
+Creating a proposal requires the target action to be enabled. Execution does
+not re-check action availability, so governance cannot retroactively veto a
+proposal that was validly created, voted, finalized, and passed before the
+action was disabled.
+
+Known executable action payloads are validated at proposal creation time. This
+rejects invalid fee levels, boolean fields, direct-authority modes,
+action-enable targets, proposal-duration values, and required nonzero addresses
+before voting begins.
 
 `ACTION_SET_GOVERNANCE_ACTION_ENABLED` is the governance-controlled action used
 to enable or disable other known actions. It cannot disable itself.
@@ -146,6 +153,11 @@ Operator handoff cancellation can be triggered in two ways:
 The proposal execution path for cancellation takes the pending transfer objects
 directly and clears the pending operator state after the governance proposal has
 passed and while its execution window is still valid.
+
+This path uses
+`governance_voting::execute_cancel_operator_transfer_proposal`, not the generic
+`execute_proposal` dispatcher, because the cancellation needs pending-transfer
+objects and wrapper tickets at execution time.
 
 ## Permissionless Execution
 

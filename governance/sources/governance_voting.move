@@ -48,6 +48,7 @@ const E_PROPOSAL_EXECUTION_NOT_EXPIRED: u64 = 26;
 const E_PROPOSAL_OUTCOME_NOT_YET_DETERMINABLE: u64 = 27;
 const E_ACTION_NOT_ENABLED: u64 = 28;
 const E_INVALID_ACTION_ENABLE_TARGET: u64 = 29;
+const E_NOT_GOVERNANCE_CONFIG_INITIALIZER: u64 = 30;
 
 const PROPOSAL_TYPE_EXECUTABLE: u8 = 1;
 const PROPOSAL_TYPE_SIGNAL: u8 = 2;
@@ -238,6 +239,11 @@ public fun new_governance_config(
     ctx: &mut TxContext,
 ): GovernanceConfig {
     governance::assert_current_vault(vault);
+    assert!(
+        tx_context::sender(ctx) == governance::governance_authority(vault) ||
+        tx_context::sender(ctx) == governance::upgrade_authority(vault),
+        E_NOT_GOVERNANCE_CONFIG_INITIALIZER,
+    );
     let pprf_total_supply = pprf::total_supply_base_units();
     assert!(pprf_total_supply > 0, E_ZERO_TOTAL_SUPPLY);
 

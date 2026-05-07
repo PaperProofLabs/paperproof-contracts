@@ -7,6 +7,10 @@ The documentation layer is intended to describe the architecture, package
 boundaries, deployment assumptions, governance expectations, and integration
 surface of the publishing, governance, comments, and shared contract packages.
 
+Documentation in this directory is protected project material. In addition to
+the repository root `LICENSE`, `NOTICE`, and `TRADEMARKS.md`, see
+`CONTENT_NOTICE.md` for the documentation-specific content notice.
+
 Typical contents of this directory may include:
 
 - package-level design notes
@@ -51,4 +55,5 @@ Current documents include:
 
 Unless otherwise expressly stated, all documentation and materials in this
 directory are governed by the repository root `LICENSE`, `NOTICE`, and
-`TRADEMARKS.md` files.
+`TRADEMARKS.md` files, together with the documentation-specific
+`CONTENT_NOTICE.md` in this directory.
