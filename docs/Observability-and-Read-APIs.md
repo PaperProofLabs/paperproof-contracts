@@ -59,7 +59,6 @@ and successful updates emit `ArtifactSeriesMetadataUpdatedEvent`.
 
 The comments package emits:
 
-- `TreeCreatedEvent`
 - `CommentAddedEvent`
 - `TreeStatusChangedEvent`
 - `CommentStatusChangedEvent`
@@ -71,6 +70,10 @@ The comments package emits:
 The publishing root creates and embeds one official `TreeFactoryCap` during
 initialization. First-publication flows borrow that internal capability to
 create the official per-series `CommentsTree` and its paired `LikesBook`.
+The comments package deliberately does not emit a standalone tree-discovery
+event from `comments::new_tree`; consumers should discover official comments
+trees through `ArtifactPublishedEvent` and the `ArtifactSeries.comments_tree_id`
+binding.
 
 The like event names still include `Paper` for compatibility with the current
 comments module naming, but likes are stored in the independent `LikesBook`.
@@ -123,16 +126,14 @@ Comment status uses the following policy:
 
 Indexers should still use `ArtifactSeries.comments_tree_id` and
 `ArtifactSeries.likes_book_id` as the canonical bindings. With the factory cap
-embedded in `PaperProofRoot`, ordinary callers cannot create official-looking
-trees through a shared factory object, but the series object remains the
-clearest source of truth for consumers.
+embedded in `PaperProofRoot`, ordinary callers cannot obtain the official
+factory object; removing the standalone tree-created event also prevents
+directly-created trees from producing official-looking discovery events.
 
 ## Governance Events
 
 Governance core emits:
 
-- `GovernanceVaultCreatedEvent`
-- `FeeManagerCreatedEvent`
 - `GovernanceConfigBoundEvent`
 - `OperatorNominatedEvent`
 - `OperatorTransferAcceptedEvent`
@@ -154,10 +155,12 @@ with registry, fee key, payer, recipient, and amount.
 `GovernanceConfigBoundEvent` records the one canonical voting config bound to
 the vault; consumers should treat proposal execution from any unbound config as
 non-canonical.
+Vault and fee-manager object discovery should come from the official
+`PaperProofRootCreatedEvent` and deployment manifest, not from public
+constructor events.
 
 Governance voting emits:
 
-- `GovernanceConfigCreatedEvent`
 - `ProposalCreatedEvent`
 - `VoteCastEvent`
 - `ProposalFinalizedEvent`
@@ -174,8 +177,9 @@ Governance voting emits:
 Proposal lifecycle events include `registry_id` so indexers can safely handle
 multiple deployments or test environments. Execution events also include the
 account that submitted the execution transaction.
-`GovernanceConfigCreatedEvent` includes `governance_config_id`, matching the
-config id bound on the vault.
+Governance config discovery should come from `GovernanceConfigBoundEvent` and
+the `GovernanceVault.governance_config_id` binding, not from a standalone config
+created event.
 
 ## Governance Read Surface
 

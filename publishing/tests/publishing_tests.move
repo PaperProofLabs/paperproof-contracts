@@ -41,6 +41,10 @@ fun metadata(key: vector<u8>, value: vector<u8>): MetadataAttribute {
     publishing::metadata_attribute(string::utf8(key), string::utf8(value))
 }
 
+fun metadata_from_strings(key: string::String, value: string::String): MetadataAttribute {
+    publishing::metadata_attribute(key, value)
+}
+
 fun mint_votes(amount: u64, scenario: &mut ts::Scenario): Coin<PPRF> {
     coin::mint_for_testing<PPRF>(amount, ts::ctx(scenario))
 }
@@ -615,6 +619,84 @@ fun test_non_authority_cannot_mint_comments_tree_factory_cap() {
 }
 
 #[test]
+#[expected_failure(abort_code = 28, location = paperproof_publishing::publishing)]
+fun test_metadata_extensions_reject_overlong_key() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata_from_strings(repeated_string(65, 65), string::utf8(b"value"))],
+            no_metadata(),
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 28, location = paperproof_publishing::publishing)]
+fun test_metadata_extensions_reject_overlong_value() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata_from_strings(string::utf8(b"key"), repeated_string(65, 512))],
+            no_metadata(),
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 22, location = paperproof_publishing::publishing)]
 fun test_locked_series_cannot_add_version() {
     let mut scenario = ts::begin(ADMIN);
@@ -896,6 +978,115 @@ fun test_artifact_type_fee_level_requires_payment() {
 }
 
 #[test]
+#[expected_failure(abort_code = 1, location = paperproof_publishing::publishing)]
+fun test_pause_rejects_publish() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut root = ts::take_shared<PaperProofRoot>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let permit = ts::take_from_sender<OperatorPermit>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::set_paused(&mut root, &vault, &permit, true, &clock_ref, ts::ctx(&mut scenario));
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(permit, ADMIN);
+        ts::return_shared(root);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 1, location = paperproof_publishing::publishing)]
+fun test_pause_rejects_add_version() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut root = ts::take_shared<PaperProofRoot>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let permit = ts::take_from_sender<OperatorPermit>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::set_paused(&mut root, &vault, &permit, true, &clock_ref, ts::ctx(&mut scenario));
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(permit, ADMIN);
+        ts::return_shared(root);
+        ts::return_shared(vault);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::add_generic_file_version(
+            &root, &registry, &mut series, &vault, &fee_manager,
+            string::utf8(b"File v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 9, location = paperproof_publishing::publishing)]
 fun test_comments_fee_proposal_rejects_foreign_fee_manager() {
     let mut scenario = ts::begin(ADMIN);
@@ -1099,6 +1290,80 @@ fun test_non_owner_cannot_add_artifact_version() {
 }
 
 #[test]
+#[expected_failure(abort_code = 25, location = paperproof_publishing::publishing)]
+fun test_more_than_max_versions_per_series_is_rejected() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        let mut i = 1u64;
+        while (i <= 168) {
+            publishing::add_generic_file_version(
+                &root,
+                &registry,
+                &mut series,
+                &vault,
+                &fee_manager,
+                string::utf8(b"File v2"),
+                string::utf8(b"Description v2"),
+                string::utf8(b"file-v2.zip"),
+                200,
+                string::utf8(b"MIT"),
+                string::utf8(b"sha256:v2"),
+                string::utf8(b"blob_v2"),
+                string::utf8(b"blob_object_v2"),
+                common_content_type(),
+                no_metadata(),
+                option::none(),
+                &clock_ref,
+                ts::ctx(&mut scenario),
+            );
+            i = i + 1u64;
+        };
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
 #[expected_failure(abort_code = 10, location = paperproof_governance::governance)]
 fun test_artifact_fee_requires_payment_coin() {
     let mut scenario = ts::begin(ADMIN);
@@ -1228,6 +1493,42 @@ fun test_foreign_fee_manager_cannot_collect_artifact_fee() {
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(foreign_fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 7, location = paperproof_publishing::publishing)]
+fun test_same_registry_fake_type_registry_cannot_publish() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let fake_registry_id = publishing::share_test_type_registry_with_same_registry_id(&root, ts::ctx(&mut scenario));
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let fake_registry = ts::take_shared_by_id<TypeRegistry>(
+            &scenario,
+            fake_registry_id,
+        );
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &fake_registry, &vault, &fee_manager,
+            string::utf8(b"File"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(fake_registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::end(scenario);

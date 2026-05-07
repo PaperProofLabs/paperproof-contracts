@@ -122,6 +122,7 @@ public struct ManagedUpgradeCap has key {
     cap: UpgradeCap,
 }
 
+#[allow(unused_field)]
 public struct GovernanceVaultCreatedEvent has copy, drop {
     registry_id: ID,
     vault_id: ID,
@@ -134,6 +135,7 @@ public struct GovernanceVaultCreatedEvent has copy, drop {
     direct_authority_mode: u8,
 }
 
+#[allow(unused_field)]
 public struct FeeManagerCreatedEvent has copy, drop {
     registry_id: ID,
     fee_manager_id: ID,
@@ -259,7 +261,6 @@ public fun new_vault(
     };
 
     let vault_uid = object::new(ctx);
-    let vault_id = *vault_uid.as_inner();
     let vault = GovernanceVault {
         id: vault_uid,
         version: GOVERNANCE_VAULT_VERSION,
@@ -278,18 +279,6 @@ public fun new_vault(
         direct_authority_mode: DIRECT_AUTHORITY_MODE_FULL,
         direct_authority_permanently_disabled: false,
     };
-
-    event::emit(GovernanceVaultCreatedEvent {
-        registry_id,
-        vault_id,
-        governance_config_id: object::id_from_address(@0x0),
-        governance_authority,
-        upgrade_authority: governance_authority,
-        active_operator: initial_operator,
-        active_operator_epoch: 1,
-        fee_recipient: governance_authority,
-        direct_authority_mode: DIRECT_AUTHORITY_MODE_FULL,
-    });
 
     let permit = OperatorPermit {
         id: object::new(ctx),
@@ -449,12 +438,6 @@ public fun new_fee_manager(
     ctx: &mut TxContext,
 ): FeeManager {
     let fee_manager_uid = object::new(ctx);
-    let fee_manager_id = *fee_manager_uid.as_inner();
-    event::emit(FeeManagerCreatedEvent {
-        registry_id,
-        fee_manager_id,
-        created_by: tx_context::sender(ctx),
-    });
     FeeManager {
         id: fee_manager_uid,
         version: GOVERNANCE_VAULT_VERSION,

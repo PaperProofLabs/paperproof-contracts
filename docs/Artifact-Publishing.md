@@ -85,8 +85,10 @@ marker object:
 - timestamps
 
 This keeps future type expansion from changing the root object layout. Publish
-entrypoints read `TypeRegistry` to validate type enablement, but they do not
-write the per-type `TypeIndex`.
+entrypoints read the official `TypeRegistry` object recorded in
+`PaperProofRoot.type_registry_id` to validate type enablement, but they do not
+write the per-type `TypeIndex`. A registry with the same `registry_id` is not
+trusted unless its object ID also matches the root binding.
 
 ## Version Records
 

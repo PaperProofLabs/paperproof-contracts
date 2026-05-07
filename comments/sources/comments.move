@@ -104,6 +104,7 @@ public struct CommentNode has store {
     status: u8,
 }
 
+#[allow(unused_field)]
 public struct TreeCreatedEvent has copy, drop {
     tree_id: ID,
     creator: address,
@@ -286,20 +287,6 @@ public fun new_tree(
         status: COMMENT_STATUS_ACTIVE,
     };
     table::add(&mut tree.nodes, ROOT_COMMENT_ID, root);
-
-    event::emit(TreeCreatedEvent {
-        tree_id,
-        creator: tree.creator,
-        owner: tree.owner,
-        registry_id: tree.registry_id,
-        governance_vault_id: tree.governance_vault_id,
-        fee_manager_id: tree.fee_manager_id,
-        target_key: tree.target_key,
-        target_series_id: tree.target_series_id,
-        target_artifact_type: tree.target_artifact_type,
-        created_at_ms: tree.created_at_ms,
-        likes_book_id,
-    });
 
     (tree, likes_book)
 }

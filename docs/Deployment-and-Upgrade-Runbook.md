@@ -159,6 +159,9 @@ Maintain these invariants:
 - `FeeManager.registry_id == PaperProofRoot ID`
 - `PaperProofRoot` embeds the official comments tree factory capability
 - the root comments tree factory registry getter returns `PaperProofRoot ID`
+- comments tree discovery is derived from `ArtifactPublishedEvent` and
+  `ArtifactSeries.comments_tree_id`, not a standalone comments-tree creation
+  event
 - each `ArtifactSeries` binds exactly one official `CommentsTree`
 - each `ArtifactSeries` binds exactly one official `LikesBook`
 - `CommentsTree.likes_book_id == ArtifactSeries.likes_book_id`
@@ -166,3 +169,6 @@ Maintain these invariants:
 - later versions reuse the same comments tree and likes book
 - proposal state transitions must verify the proposal belongs to the supplied
   `GovernanceConfig` through `proposal_id_to_object`
+- official governance object discovery is derived from `PaperProofRoot`,
+  `GovernanceConfigBoundEvent`, and deployment manifests, not public
+  constructor-style events

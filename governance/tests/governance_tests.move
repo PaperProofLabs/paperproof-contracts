@@ -1,7 +1,14 @@
 #[test_only]
 module paperproof_governance::governance_tests;
 
-use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault, OperatorPermit};
+use paperproof_governance::governance::{
+    Self as governance,
+    FeeManager,
+    FeeManagerCreatedEvent,
+    GovernanceVault,
+    GovernanceVaultCreatedEvent,
+    OperatorPermit,
+};
 
 use openzeppelin_access::two_step_transfer::{
     PendingOwnershipTransfer,
@@ -9,6 +16,7 @@ use openzeppelin_access::two_step_transfer::{
 };
 use sui::package;
 use sui::coin;
+use sui::event;
 use sui::sui::SUI;
 use sui::test_scenario as ts;
 
@@ -57,6 +65,29 @@ fun test_vault_defaults_and_fee_setters() {
 
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_public_governance_object_constructors_do_not_emit_discovery_events() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x310);
+
+    {
+        let (vault, permit) = governance::new_vault(
+            registry_id,
+            ADMIN,
+            ADMIN,
+            ts::ctx(&mut scenario),
+        );
+        let fee_manager = governance::new_fee_manager(registry_id, ts::ctx(&mut scenario));
+        assert!(event::events_by_type<GovernanceVaultCreatedEvent>().length() == 0, 0);
+        assert!(event::events_by_type<FeeManagerCreatedEvent>().length() == 0, 1);
+        governance::share_vault(vault);
+        governance::share_fee_manager(fee_manager);
+        transfer::public_transfer(permit, ADMIN);
     };
 
     ts::end(scenario);

@@ -1053,6 +1053,7 @@ public fun execute_artifact_type_enabled_proposal(
 ) {
     assert_current_root(root);
     assert_current_registry(type_registry);
+    assert!(object::id(type_registry) == root.type_registry_id, E_INVALID_INDEX);
     assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
     assert!(root.governance_vault_id == object::id(governance_vault), E_INVALID_GOVERNANCE_VAULT);
 
@@ -1132,6 +1133,7 @@ public fun execute_artifact_type_activation_proposal(
 ) {
     assert_current_root(root);
     assert_current_registry(type_registry);
+    assert!(object::id(type_registry) == root.type_registry_id, E_INVALID_INDEX);
     assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
     assert!(root.governance_vault_id == object::id(governance_vault), E_INVALID_GOVERNANCE_VAULT);
     assert!(root.fee_manager_id == governance::fee_manager_id(fee_manager), E_INVALID_FEE_MANAGER);
@@ -1385,6 +1387,7 @@ fun add_version_common(
     assert_current_registry(type_registry);
     assert_current_series(series);
     assert!(!root.paused, E_PAUSED);
+    assert!(object::id(type_registry) == root.type_registry_id, E_INVALID_INDEX);
     assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
     let type_info = table::borrow(&type_registry.types, artifact_type);
     assert!(type_info.enabled, E_ARTIFACT_TYPE_DISABLED);
@@ -1452,6 +1455,7 @@ fun assert_publish_context(
     assert_current_registry(type_registry);
     assert!(!root.paused, E_PAUSED);
     assert_valid_artifact_type(artifact_type);
+    assert!(object::id(type_registry) == root.type_registry_id, E_INVALID_INDEX);
     assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
     let info = table::borrow(&type_registry.types, artifact_type);
     assert!(info.enabled, E_ARTIFACT_TYPE_DISABLED);
@@ -1629,4 +1633,18 @@ public fun init_for_testing(ctx: &mut TxContext) {
 #[test_only]
 public fun expected_artifact_code_for_testing(artifact_type: u8, epoch: u64, series_id: ID): String {
     artifact_types::code(artifact_type, epoch, &series_id)
+}
+
+#[test_only]
+public fun share_test_type_registry_with_same_registry_id(root: &PaperProofRoot, ctx: &mut TxContext): ID {
+    let mut type_registry = TypeRegistry {
+        id: object::new(ctx),
+        version: TYPE_REGISTRY_VERSION,
+        registry_id: object::id(root),
+        types: table::new(ctx),
+    };
+    add_type_info(&mut type_registry, artifact_types::generic_file(), object::id_from_address(@0xFA11), 0);
+    let type_registry_id = object::id(&type_registry);
+    transfer::share_object(type_registry);
+    type_registry_id
 }

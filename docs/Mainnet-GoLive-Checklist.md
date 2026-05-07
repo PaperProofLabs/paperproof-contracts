@@ -94,6 +94,8 @@ publishing protocol to users.
       tree binding, not a standalone `TreeCreatedEvent`
 - [ ] indexer treats `ArtifactSeries.likes_book_id` as the trusted likes
       binding, not a standalone like event
+- [ ] indexer discovers official governance objects from `PaperProofRoot` and
+      `GovernanceConfigBoundEvent`, not public constructor-style events
 
 ## Documentation
 

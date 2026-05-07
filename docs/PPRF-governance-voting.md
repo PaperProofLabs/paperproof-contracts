@@ -80,6 +80,12 @@ Currently implemented signaling actions are:
 These proposals are intended to reflect community will and provide formal
 governance evidence for subsequent off-chain or operational action.
 
+## Proposal Text Bounds
+
+Proposal creation rejects an empty title, titles longer than `256` bytes, and
+descriptions longer than `4096` bytes. These limits are byte limits on the Move
+`String` value and are enforced before the proposal object is created.
+
 ## Total Voting Token Supply
 
 For PaperProof governance, the total voting token supply is defined directly as

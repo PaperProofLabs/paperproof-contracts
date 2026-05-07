@@ -194,6 +194,7 @@ Mark each item after verification.
 - [ ] `FeeManager.registry_id` equals the official `PaperProofRoot` ID
 - [ ] root comments tree factory registry getter equals the official `PaperProofRoot` ID
 - [ ] `TypeRegistry.registry_id` equals the official `PaperProofRoot` ID
+- [ ] `TypeRegistry` object ID equals `PaperProofRoot.type_registry_id`
 - [ ] `publishing` frontend config points to the official package ID
 - [ ] `comments` frontend config points to the official package ID
 - [ ] `governance` frontend config points to the official package ID

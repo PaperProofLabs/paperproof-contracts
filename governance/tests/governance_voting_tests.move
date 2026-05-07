@@ -12,6 +12,7 @@ use openzeppelin_access::two_step_transfer::{
     TwoStepTransferWrapper,
 };
 use sui::coin::{Self as coin, Coin};
+use sui::event;
 use sui::test_scenario as ts;
 
 const ADMIN: address = @0xA;
@@ -32,6 +33,16 @@ const UPDATED_PROPOSAL_DURATION: u64 = 7;
 
 fun mint_votes(amount: u64, scenario: &mut ts::Scenario): Coin<PPRF> {
     coin::mint_for_testing<PPRF>(amount, ts::ctx(scenario))
+}
+
+fun repeated_string(byte: u8, len: u64): string::String {
+    let mut bytes = vector[];
+    let mut i = 0;
+    while (i < len) {
+        vector::push_back(&mut bytes, byte);
+        i = i + 1;
+    };
+    string::utf8(bytes)
 }
 
 fun init_vault_and_config(
@@ -89,6 +100,28 @@ fun test_duplicate_governance_config_is_rejected() {
     voting::share_governance_config(config);
     voting::share_governance_config(duplicate);
     governance::share_vault(vault);
+    ts::end(scenario);
+}
+
+#[test]
+fun test_public_governance_config_constructor_does_not_emit_discovery_event() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x423);
+
+    {
+        let (mut vault, permit) = governance::new_vault(
+            registry_id,
+            ADMIN,
+            ADMIN,
+            ts::ctx(&mut scenario),
+        );
+        let config = voting::new_governance_config(&mut vault, ts::ctx(&mut scenario));
+        assert!(event::events_by_type<voting::GovernanceConfigCreatedEvent>().length() == 0, 0);
+        governance::share_vault(vault);
+        voting::share_governance_config(config);
+        transfer::public_transfer(permit, ADMIN);
+    };
+
     ts::end(scenario);
 }
 
@@ -205,6 +238,130 @@ fun test_create_execute_and_claim_fee_proposal() {
         assert!(coin::value(&refund) == PROPOSER_THRESHOLD, 13);
         transfer::public_transfer(refund, ADMIN);
         assert!(voting::yes_locked_value(&proposal) == 0, 14);
+        ts::return_shared(proposal);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 9, location = paperproof_governance::governance_voting)]
+fun test_executed_proposal_cannot_execute_again() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x424));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b"Set comments fee"),
+            string::utf8(b"Execute once only"),
+            2,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(&mut proposal, mint_votes(QUORUM_PASS_VOTES, &mut scenario), ts::ctx(&mut scenario));
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let action_executor_cap = ts::take_from_sender<GovernanceActionExecutorCap>(&scenario);
+        let mut fee_manager = ts::take_shared<FeeManager>(&scenario);
+
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        voting::execute_comments_fee_level_proposal(
+            &mut config,
+            &mut proposal,
+            &vault,
+            &action_executor_cap,
+            &mut fee_manager,
+            ts::ctx(&mut scenario),
+        );
+        voting::execute_comments_fee_level_proposal(
+            &mut config,
+            &mut proposal,
+            &vault,
+            &action_executor_cap,
+            &mut fee_manager,
+            ts::ctx(&mut scenario),
+        );
+
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_to_sender(&scenario, action_executor_cap);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 19, location = paperproof_governance::governance_voting)]
+fun test_locked_tokens_cannot_be_claimed_twice() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x425));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_signal(),
+            voting::action_signal_feature_direction(),
+            string::utf8(b"Signal"),
+            string::utf8(b"Low quorum should reject"),
+            0,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::vote_yes(&mut proposal, mint_votes(LOW_QUORUM_VOTES, &mut scenario), ts::ctx(&mut scenario));
+        ts::return_shared(proposal);
+    };
+
+    advance_beyond_voting_period(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        voting::finalize_proposal(&mut config, &mut proposal, ts::ctx(&mut scenario));
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    ts::next_tx(&mut scenario, VOTER1);
+    {
+        let mut proposal = ts::take_shared<Proposal>(&scenario);
+        let refund = voting::claim_locked_tokens(&mut proposal, ts::ctx(&mut scenario));
+        transfer::public_transfer(refund, VOTER1);
+        let second_refund = voting::claim_locked_tokens(&mut proposal, ts::ctx(&mut scenario));
+        transfer::public_transfer(second_refund, VOTER1);
         ts::return_shared(proposal);
     };
 
@@ -1521,6 +1678,93 @@ fun test_invalid_proposer_threshold_rejected_at_creation() {
             string::utf8(b"Invalid threshold"),
             string::utf8(b"Too low"),
             99_999_000_000_000,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 32, location = paperproof_governance::governance_voting)]
+fun test_empty_proposal_title_rejected_at_creation() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x421));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b""),
+            string::utf8(b"Set comments fee"),
+            1,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 33, location = paperproof_governance::governance_voting)]
+fun test_overlong_proposal_title_rejected_at_creation() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x426));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            repeated_string(65, 257),
+            string::utf8(b"Set comments fee"),
+            1,
+            0,
+            @0x0,
+            option::none(),
+            vector[],
+            mint_votes(PROPOSER_THRESHOLD, &mut scenario),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(config);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 33, location = paperproof_governance::governance_voting)]
+fun test_overlong_proposal_description_rejected_at_creation() {
+    let mut scenario = ts::begin(ADMIN);
+    init_vault_and_config(&mut scenario, object::id_from_address(@0x422));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        voting::create_proposal(
+            &mut config,
+            voting::proposal_type_executable(),
+            voting::action_set_comments_fee_level(),
+            string::utf8(b"Set comments fee"),
+            repeated_string(65, 4097),
+            1,
             0,
             @0x0,
             option::none(),

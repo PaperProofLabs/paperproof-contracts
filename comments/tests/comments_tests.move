@@ -7,10 +7,11 @@ use paperproof_governance::governance::{Self as governance, FeeManager, Governan
 use pprf::pprf::PPRF;
 use sui::clock;
 use sui::coin;
+use sui::event;
 use sui::sui::SUI;
 use sui::test_scenario as ts;
 
-use paperproof_comments::comments::{Self, CommentsTree, LikesBook};
+use paperproof_comments::comments::{Self, CommentsTree, LikesBook, TreeCreatedEvent};
 
 const ADMIN: address = @0xA;
 const USER1: address = @0xB;
@@ -92,6 +93,26 @@ fun test_create_tree_and_owner_controls_tree() {
         let root = comments::borrow_comment(&tree, 0);
         assert!(comments::comment_depth(root) == 0, 7);
         ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_direct_tree_creation_does_not_emit_tree_created_event() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x109);
+    let paper_object_id = object::id_from_address(@0x209);
+
+    {
+        shared_tree(
+            &mut scenario,
+            registry_id,
+            paper_object_id,
+            USER1,
+            b"PaperProof-2026-0009",
+        );
+        assert!(event::events_by_type<TreeCreatedEvent>().length() == 0, 0);
     };
 
     ts::end(scenario);

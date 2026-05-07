@@ -6,7 +6,7 @@
 
 module paperproof_governance::governance_voting;
 
-use std::string::String;
+use std::string::{Self as string, String};
 use paperproof_governance::governance::{Self as governance, GovernanceActionExecutorCap, GovernanceVault};
 use openzeppelin_access::two_step_transfer::{
     PendingOwnershipTransfer,
@@ -50,6 +50,8 @@ const E_ACTION_NOT_ENABLED: u64 = 28;
 const E_INVALID_ACTION_ENABLE_TARGET: u64 = 29;
 const E_NOT_GOVERNANCE_CONFIG_INITIALIZER: u64 = 30;
 const E_INVALID_PROPOSAL_CONFIG_BINDING: u64 = 31;
+const E_EMPTY_PROPOSAL_TITLE: u64 = 32;
+const E_PROPOSAL_TEXT_TOO_LONG: u64 = 33;
 
 const PROPOSAL_TYPE_EXECUTABLE: u8 = 1;
 const PROPOSAL_TYPE_SIGNAL: u8 = 2;
@@ -89,6 +91,8 @@ const MIN_VOTE_STAKE: u64 = 100_000_000_000; // 100 PPRF
 const DEFAULT_PROPOSER_THRESHOLD: u64 = 10_000_000_000_000_000; // 10,000,000 PPRF
 const MIN_PROPOSER_THRESHOLD: u64 = 100_000_000_000_000; // 100,000 PPRF
 const MAX_PROPOSER_THRESHOLD: u64 = 1_000_000_000_000_000_000; // 1,000,000,000 PPRF
+const MAX_PROPOSAL_TITLE_BYTES: u64 = 256;
+const MAX_PROPOSAL_DESCRIPTION_BYTES: u64 = 4096;
 
 const GOVERNANCE_CONFIG_VERSION: u64 = 1;
 const PROPOSAL_VERSION: u64 = 1;
@@ -138,6 +142,7 @@ public struct Proposal has key {
     votes: Table<address, VoteRecord>,
 }
 
+#[allow(unused_field)]
 public struct GovernanceConfigCreatedEvent has copy, drop {
     registry_id: ID,
     governance_config_id: ID,
@@ -266,14 +271,6 @@ public fun new_governance_config(
         enabled_actions,
     };
 
-    event::emit(GovernanceConfigCreatedEvent {
-        registry_id: config.registry_id,
-        governance_config_id,
-        pprf_total_supply,
-        proposer_threshold: DEFAULT_PROPOSER_THRESHOLD,
-        proposal_duration_epochs: DEFAULT_PROPOSAL_DURATION_EPOCHS,
-    });
-
     config
 }
 
@@ -332,6 +329,7 @@ public fun create_proposal(
     assert_current_config(config);
     assert!(!config.proposal_creation_paused, E_PROPOSAL_CREATION_PAUSED);
     assert!(option::is_none(&config.active_proposal_id), E_ACTIVE_PROPOSAL_EXISTS);
+    assert_valid_proposal_text(&title, &description);
     assert_valid_proposal_action_pair(proposal_type, action_type);
     assert_action_enabled(config, action_type);
     assert_valid_proposal_payload(
@@ -1133,6 +1131,12 @@ fun assert_valid_proposal_duration_epochs(new_duration: u64) {
         new_duration <= MAX_PROPOSAL_DURATION_EPOCHS,
         E_INVALID_PROPOSAL_DURATION_EPOCHS,
     );
+}
+
+fun assert_valid_proposal_text(title: &String, description: &String) {
+    assert!(string::length(title) > 0, E_EMPTY_PROPOSAL_TITLE);
+    assert!(string::length(title) <= MAX_PROPOSAL_TITLE_BYTES, E_PROPOSAL_TEXT_TOO_LONG);
+    assert!(string::length(description) <= MAX_PROPOSAL_DESCRIPTION_BYTES, E_PROPOSAL_TEXT_TOO_LONG);
 }
 
 fun deterministic_pass(
