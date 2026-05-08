@@ -21,6 +21,9 @@ Typical contents of this directory may include:
 
 Current documents include:
 
+- `PaperProof-Yellow-Paper.en.md`: protocol yellow paper covering PaperProof's
+  positioning, contract object model, Sui/Walrus division of labor, SDK
+  integration surface, governance path, fees, events, and security boundaries
 - `Artifact-Publishing.md`: current artifact publishing architecture,
   built-in types, `ArtifactSeries`/typed-version model, comments binding,
   type-specific fees, and governance activation flow
