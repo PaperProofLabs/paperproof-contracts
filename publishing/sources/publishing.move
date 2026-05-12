@@ -19,6 +19,7 @@ use paperproof_governance::governance_voting::{Self as voting, GovernanceConfig,
 
 use sui::clock::{Self as clock, Clock};
 use sui::coin::Coin;
+use sui::derived_object;
 use sui::event;
 use sui::sui::SUI;
 use sui::table::{Self as table, Table};
@@ -41,6 +42,7 @@ const E_TOO_MANY_METADATA_ATTRIBUTES: u64 = 26;
 const E_EMPTY_METADATA_KEY: u64 = 27;
 const E_METADATA_TEXT_TOO_LONG: u64 = 28;
 const E_DUPLICATE_METADATA_KEY: u64 = 29;
+const E_DIRECT_PREPRINT_PUBLISH_DISABLED: u64 = 30;
 
 const PAPERPROOF_ROOT_VERSION: u64 = 1;
 const TYPE_REGISTRY_VERSION: u64 = 1;
@@ -117,6 +119,18 @@ public struct ArtifactSeries has key {
     ui_status: u8,
     created_at_ms: u64,
     updated_at_ms: u64,
+}
+
+public struct PreprintReservation has key, store {
+    id: UID,
+    reserver: address,
+    series_address: address,
+    artifact_code: String,
+    created_at_ms: u64,
+}
+
+public struct PreprintSeriesKey has copy, drop, store {
+    reservation_id: ID,
 }
 
 public struct CommonArtifactHeader has store {
@@ -213,6 +227,14 @@ public struct ArtifactPublishedEvent has copy, drop {
     version: u64,
     comments_tree_id: ID,
     likes_book_id: ID,
+    created_at_ms: u64,
+}
+
+public struct PreprintCodeReservedEvent has copy, drop {
+    reservation_id: ID,
+    series_id: ID,
+    reserver: address,
+    artifact_code: String,
     created_at_ms: u64,
 }
 
@@ -372,6 +394,64 @@ fun init(ctx: &mut TxContext) {
 }
 
 public fun publish_preprint(
+    _root: &PaperProofRoot,
+    _type_registry: &TypeRegistry,
+    _governance_vault: &GovernanceVault,
+    _fee_manager: &FeeManager,
+    _title: String,
+    _abstract_text: String,
+    _authors: vector<String>,
+    _keywords: vector<String>,
+    _field: String,
+    _license: String,
+    _page_count: u64,
+    _content_hash: String,
+    _walrus_blob_id: String,
+    _walrus_blob_object_id: String,
+    _content_type: String,
+    _series_metadata_extensions: vector<MetadataAttribute>,
+    _version_metadata_extensions: vector<MetadataAttribute>,
+    _payment: Option<Coin<SUI>>,
+    _clock_ref: &Clock,
+    _ctx: &mut TxContext,
+) {
+    abort E_DIRECT_PREPRINT_PUBLISH_DISABLED
+}
+
+public fun reserve_preprint_code(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+): PreprintReservation {
+    assert_publish_context(root, type_registry, governance_vault, fee_manager, artifact_types::preprint());
+    let now = clock::timestamp_ms(clock_ref);
+    let sender = tx_context::sender(ctx);
+    let reservation_uid = object::new(ctx);
+    let reservation_id = *reservation_uid.as_inner();
+    let series_address = derived_object::derive_address(reservation_id, PreprintSeriesKey { reservation_id });
+    let series_id = object::id_from_address(series_address);
+    let artifact_code = make_artifact_code(artifact_types::preprint(), tx_context::epoch(ctx), &series_id);
+    event::emit(PreprintCodeReservedEvent {
+        reservation_id,
+        series_id,
+        reserver: sender,
+        artifact_code,
+        created_at_ms: now,
+    });
+    PreprintReservation {
+        id: reservation_uid,
+        reserver: sender,
+        series_address,
+        artifact_code,
+        created_at_ms: now,
+    }
+}
+
+public fun finalize_reserved_preprint(
+    reservation: PreprintReservation,
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
     governance_vault: &GovernanceVault,
@@ -401,12 +481,12 @@ public fun publish_preprint(
     validate_short_text(&license);
     let version_uid = object::new(ctx);
     let version_id = *version_uid.as_inner();
-    let (series, header, comments_tree, likes_book) = publish_common(
+    let (series, header, comments_tree, likes_book) = publish_reserved_preprint_common(
+        reservation,
         root,
         type_registry,
         governance_vault,
         fee_manager,
-        artifact_types::preprint(),
         version_id,
         content_hash,
         walrus_blob_id,
@@ -1234,6 +1314,10 @@ public fun type_index_object_id(type_registry: &TypeRegistry, artifact_type: u8)
 }
 
 public fun index_artifact_type(index: &TypeIndex): u8 { index.artifact_type }
+public fun preprint_reservation_artifact_code(reservation: &PreprintReservation): String { reservation.artifact_code }
+public fun preprint_reservation_series_id(reservation: &PreprintReservation): ID { object::id_from_address(reservation.series_address) }
+public fun preprint_reservation_reserver(reservation: &PreprintReservation): address { reservation.reserver }
+public fun preprint_reservation_created_at_ms(reservation: &PreprintReservation): u64 { reservation.created_at_ms }
 public fun series_artifact_type(series: &ArtifactSeries): u8 { series.artifact_type }
 public fun series_artifact_code(series: &ArtifactSeries): String { series.artifact_code }
 public fun series_owner(series: &ArtifactSeries): address { series.owner }
@@ -1352,6 +1436,107 @@ fun publish_common(
         series_id,
         version_id,
         artifact_type,
+        artifact_code,
+        author: sender,
+        content_hash: header.content_hash,
+        walrus_blob_id: header.walrus_blob_id,
+        content_type: header.content_type,
+        version: 1,
+        comments_tree_id,
+        likes_book_id,
+        created_at_ms: now,
+    });
+
+    (series, header, comments_tree, likes_book)
+}
+
+fun publish_reserved_preprint_common(
+    reservation: PreprintReservation,
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    version_id: ID,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+): (ArtifactSeries, CommonArtifactHeader, CommentsTree, LikesBook) {
+    assert_publish_context(root, type_registry, governance_vault, fee_manager, artifact_types::preprint());
+    validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
+    validate_metadata_extensions(&series_metadata_extensions);
+    validate_metadata_extensions(&version_metadata_extensions);
+    governance::collect_artifact_fee(governance_vault, fee_manager, artifact_types::preprint(), payment, ctx);
+
+    let PreprintReservation { id: mut reservation_uid, reserver, series_address, artifact_code, created_at_ms: _ } = reservation;
+    let sender = tx_context::sender(ctx);
+    assert!(sender == reserver, E_NOT_OWNER);
+    let now = clock::timestamp_ms(clock_ref);
+    let reservation_id = *reservation_uid.as_inner();
+    let series_uid = derived_object::claim(&mut reservation_uid, PreprintSeriesKey { reservation_id });
+    object::delete(reservation_uid);
+    let series_id = *series_uid.as_inner();
+    assert!(series_id == object::id_from_address(series_address), E_INVALID_INDEX);
+
+    let (comments_tree, likes_book) = comments::new_tree(
+        &root.comments_tree_factory_cap,
+        object::id(root),
+        root.governance_vault_id,
+        root.fee_manager_id,
+        sender,
+        artifact_code,
+        series_id,
+        artifact_types::preprint(),
+        clock_ref,
+        ctx,
+    );
+    let comments_tree_id = comments::tree_id(&comments_tree);
+    let likes_book_id = comments::likes_book_id(&likes_book);
+
+    let mut version_ids = vector::empty<ID>();
+    vector::push_back(&mut version_ids, version_id);
+    let series = ArtifactSeries {
+        id: series_uid,
+        version: ARTIFACT_SERIES_VERSION,
+        artifact_type: artifact_types::preprint(),
+        artifact_code,
+        owner: sender,
+        current_version: 1,
+        current_version_id: version_id,
+        version_ids,
+        metadata_extensions: series_metadata_extensions,
+        comments_tree_id,
+        likes_book_id,
+        status: SERIES_STATUS_ACTIVE,
+        ui_status: UI_NORMAL,
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+
+    let header = CommonArtifactHeader {
+        series_id,
+        artifact_type: artifact_types::preprint(),
+        version: 1,
+        previous_version_id: option::none(),
+        author: sender,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        metadata_extensions: version_metadata_extensions,
+        status: VERSION_STATUS_VALID,
+        created_at_ms: now,
+    };
+
+    event::emit(ArtifactPublishedEvent {
+        series_id,
+        version_id,
+        artifact_type: artifact_types::preprint(),
         artifact_code,
         author: sender,
         content_hash: header.content_hash,

@@ -21,7 +21,8 @@ record for this date.
 - `paperproof_governance` original package: `0x75923624e354789e995537e88afaab698bd405a61f91926e3f8837fb7cc6b5cf`
 - `paperproof_governance` latest package: `0xc1ced3b8ae5281eeeb8cdb5527978e294c54f14a7fd8d65e7e9502d4ffffb87e`
 - `paperproof_comments` package: `0xaef346fc40bf20af62f4bbbc1608ba2272e80e4ba3d716634026baa589e9aeba`
-- `paperproof_publishing` package: `0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782`
+- `paperproof_publishing` original package: `0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782`
+- `paperproof_publishing` latest package: `0xc9a75e4514db2a37df6f95b4e2b329c065ac6089953bd2c1c0a0c389835bd3d8`
 
 ## Deployment Transactions
 
@@ -31,6 +32,7 @@ record for this date.
 - GovernanceConfig creation and vault binding tx: `DXoa8uRy7vEu1dTJzzgVNYLc8WKLN5ksADjVSPidtBaV`
 - Governance v2 upgrade tx: `8TpVmJuCMYwpesBdQmazK4fgfcweihL6vcRZumcjX8Cv`
 - GovernanceConfig v2 action migration tx: `9PxfYxXzNkwHqpAgPAkDrhr8pr6DweZZUSpnLRSNiBU6`
+- Publishing v2 upgrade tx: `FiavutiZGoDXWab4LRbHidVDcPb6piYq3mMvN212XMbX`
 
 ## Governance v2 Upgrade
 
@@ -46,6 +48,34 @@ proposal action `ACTION_SET_GOVERNANCE_AUTHORITY`.
 - New governance action constant: `15`
 - Raw upgrade output: `governance/upgrade-mainnet-v2-2026-05-08.json`
 - Raw config migration output: `governance/migrate-config-mainnet-v2-2026-05-08.json`
+
+## Publishing v2 Upgrade
+
+The publishing package was upgraded on 2026-05-13 to add the reserved preprint
+code flow.
+
+The upgrade changes preprint first publication semantics:
+
+1. `publish_preprint` now aborts with
+   `E_DIRECT_PREPRINT_PUBLISH_DISABLED`.
+2. `reserve_preprint_code` creates a `PreprintReservation`, emits
+   `PreprintCodeReservedEvent`, and returns the reservation object to be owned
+   by the reserver.
+3. `finalize_reserved_preprint` consumes the reservation, derives the final
+   `ArtifactSeries` object from the reservation, and emits the existing
+   `ArtifactPublishedEvent`.
+
+The reserved artifact code is the final artifact code. A client can stamp that
+code into a PDF before uploading to Walrus, then finalize the preprint with the
+stamped content. Non-preprint artifact types continue to use their existing
+direct publish entrypoints.
+
+- Previous package ID: `0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782`
+- Latest package ID: `0xc9a75e4514db2a37df6f95b4e2b329c065ac6089953bd2c1c0a0c389835bd3d8`
+- UpgradeCap version after upgrade: `2`
+- New event: `PreprintCodeReservedEvent`
+- New reservation object: `PreprintReservation`
+- Raw upgrade output: `publishing/upgrade-mainnet-v2-2026-05-13.json`
 
 ## UpgradeCap Custody
 
@@ -153,6 +183,7 @@ The raw publish/init command outputs were saved locally:
 - `governance/init-governance-config-mainnet-2026-05-07.json`
 - `governance/upgrade-mainnet-v2-2026-05-08.json`
 - `governance/migrate-config-mainnet-v2-2026-05-08.json`
+- `publishing/upgrade-mainnet-v2-2026-05-13.json`
 
 Previous package publication records were preserved as:
 

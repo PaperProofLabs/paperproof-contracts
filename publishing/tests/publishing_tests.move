@@ -14,6 +14,7 @@ use paperproof_publishing::publishing::{
     GenericFileVersionRecord,
     MetadataAttribute,
     PaperProofRoot,
+    PreprintReservation,
     PreprintVersionRecord,
     SoftwareReleaseVersionRecord,
     TechnicalReportVersionRecord,
@@ -117,6 +118,62 @@ fun create_and_finalize_publishing_proposal(
     proposal_object_id
 }
 
+fun reserve_preprint_for_sender(scenario: &mut ts::Scenario, sender: address) {
+    ts::next_tx(scenario, sender);
+    {
+        let root = ts::take_shared<PaperProofRoot>(scenario);
+        let registry = ts::take_shared<TypeRegistry>(scenario);
+        let vault = ts::take_shared<GovernanceVault>(scenario);
+        let fee_manager = ts::take_shared<FeeManager>(scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+        let reservation = publishing::reserve_preprint_code(&root, &registry, &vault, &fee_manager, &clock_ref, ts::ctx(scenario));
+        transfer::public_transfer(reservation, sender);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+}
+
+fun finalize_sender_preprint(scenario: &mut ts::Scenario, sender: address) {
+    ts::next_tx(scenario, sender);
+    {
+        let reservation = ts::take_from_sender<PreprintReservation>(scenario);
+        let root = ts::take_shared<PaperProofRoot>(scenario);
+        let registry = ts::take_shared<TypeRegistry>(scenario);
+        let vault = ts::take_shared<GovernanceVault>(scenario);
+        let fee_manager = ts::take_shared<FeeManager>(scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+        publishing::finalize_reserved_preprint(
+            reservation,
+            &root,
+            &registry,
+            &vault,
+            &fee_manager,
+            string::utf8(b"Preprint title"),
+            string::utf8(b"Preprint abstract"),
+            vector[string::utf8(b"Alice")],
+            vector[string::utf8(b"sui")],
+            string::utf8(b"Computer Science"),
+            string::utf8(b"CC-BY-4.0"),
+            12,
+            common_hash(),
+            common_blob(),
+            common_blob_object(),
+            string::utf8(b"application/pdf"),
+            no_metadata(), no_metadata(), option::none(),
+            &clock_ref,
+            ts::ctx(scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+}
+
 #[test]
 fun test_publish_all_builtin_artifact_types() {
     let mut scenario = ts::begin(ADMIN);
@@ -135,8 +192,32 @@ fun test_publish_all_builtin_artifact_types() {
         let vault = ts::take_shared<GovernanceVault>(&scenario);
         let fee_manager = ts::take_shared<FeeManager>(&scenario);
         let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        let reservation = publishing::reserve_preprint_code(&root, &registry, &vault, &fee_manager, &clock_ref, ts::ctx(&mut scenario));
+        transfer::public_transfer(reservation, USER1);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
 
-        publishing::publish_preprint(
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let reservation = ts::take_from_sender<PreprintReservation>(&scenario);
+        let reserved_series_id = publishing::preprint_reservation_series_id(&reservation);
+        assert!(
+            publishing::preprint_reservation_artifact_code(&reservation) ==
+                publishing::expected_artifact_code_for_testing(publishing::artifact_type_preprint(), 0, reserved_series_id),
+            6,
+        );
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        publishing::finalize_reserved_preprint(
+            reservation,
             &root,
             &registry,
             &vault,
@@ -162,8 +243,10 @@ fun test_publish_all_builtin_artifact_types() {
         ts::return_shared(registry);
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
+    };
 
-        ts::next_tx(&mut scenario, USER1);
+    ts::next_tx(&mut scenario, USER1);
+    {
         let series = ts::take_shared<ArtifactSeries>(&scenario);
         let tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
         let likes_book = ts::take_shared_by_id<LikesBook>(&scenario, publishing::series_likes_book_id(&series));
@@ -172,7 +255,12 @@ fun test_publish_all_builtin_artifact_types() {
         assert!(comments::target_series_id(&tree) == object::id(&series), 3);
         assert!(comments::target_artifact_type(&tree) == publishing::artifact_type_preprint(), 4);
         assert!(publishing::header_artifact_type(publishing::preprint_header(&record)) == publishing::artifact_type_preprint(), 5);
-        assert!(publishing::series_artifact_code(&series) == publishing::expected_artifact_code_for_testing(publishing::artifact_type_preprint(), 0, object::id(&series)), 6);
+        assert!(
+            publishing::series_artifact_code(&series) ==
+                publishing::expected_artifact_code_for_testing(publishing::artifact_type_preprint(), 0, object::id(&series)),
+            6,
+        );
+        assert!(publishing::series_artifact_code(&series) == publishing::expected_artifact_code_for_testing(publishing::artifact_type_preprint(), 0, object::id(&series)), 9);
         assert!(comments::tree_likes_book_id(&tree) == publishing::series_likes_book_id(&series), 7);
         assert!(comments::likes_book_comments_tree_id(&likes_book) == publishing::series_comments_tree_id(&series), 8);
         ts::return_shared(series);
@@ -244,6 +332,380 @@ fun test_publish_all_builtin_artifact_types() {
     };
 
     ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 30, location = paperproof_publishing::publishing)]
+fun test_direct_preprint_publish_is_disabled() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let vault = ts::take_shared<GovernanceVault>(&scenario);
+    let fee_manager = ts::take_shared<FeeManager>(&scenario);
+    let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+    publishing::publish_preprint(
+        &root,
+        &registry,
+        &vault,
+        &fee_manager,
+        string::utf8(b"Preprint title"),
+        string::utf8(b"Preprint abstract"),
+        vector[string::utf8(b"Alice")],
+        vector[string::utf8(b"sui")],
+        string::utf8(b"Computer Science"),
+        string::utf8(b"CC-BY-4.0"),
+        12,
+        common_hash(),
+        common_blob(),
+        common_blob_object(),
+        string::utf8(b"application/pdf"),
+        no_metadata(), no_metadata(), option::none(),
+        &clock_ref,
+        ts::ctx(&mut scenario),
+    );
+    abort 999
+}
+
+#[test]
+#[expected_failure(abort_code = 21, location = paperproof_publishing::publishing)]
+fun test_non_reserver_cannot_finalize_reserved_preprint() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        let reservation = publishing::reserve_preprint_code(&root, &registry, &vault, &fee_manager, &clock_ref, ts::ctx(&mut scenario));
+        transfer::public_transfer(reservation, USER1);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    let reservation = ts::take_from_sender<PreprintReservation>(&scenario);
+    transfer::public_transfer(reservation, USER2);
+
+    ts::next_tx(&mut scenario, USER2);
+    let reservation = ts::take_from_sender<PreprintReservation>(&scenario);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    let vault = ts::take_shared<GovernanceVault>(&scenario);
+    let fee_manager = ts::take_shared<FeeManager>(&scenario);
+    let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+    publishing::finalize_reserved_preprint(
+        reservation,
+        &root,
+        &registry,
+        &vault,
+        &fee_manager,
+        string::utf8(b"Preprint title"),
+        string::utf8(b"Preprint abstract"),
+        vector[string::utf8(b"Alice")],
+        vector[string::utf8(b"sui")],
+        string::utf8(b"Computer Science"),
+        string::utf8(b"CC-BY-4.0"),
+        12,
+        common_hash(),
+        common_blob(),
+        common_blob_object(),
+        string::utf8(b"application/pdf"),
+        no_metadata(), no_metadata(), option::none(),
+        &clock_ref,
+        ts::ctx(&mut scenario),
+    );
+    abort 999
+}
+
+#[test]
+fun test_reserved_preprint_can_add_version_after_finalize() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    reserve_preprint_for_sender(&mut scenario, USER1);
+    finalize_sender_preprint(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let original_code = publishing::series_artifact_code(&series);
+        let original_tree_id = publishing::series_comments_tree_id(&series);
+        let original_likes_book_id = publishing::series_likes_book_id(&series);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::add_preprint_version(
+            &root,
+            &registry,
+            &mut series,
+            &vault,
+            &fee_manager,
+            string::utf8(b"Preprint title v2"),
+            string::utf8(b"Preprint abstract v2"),
+            vector[string::utf8(b"Alice")],
+            vector[string::utf8(b"sui"), string::utf8(b"preprint")],
+            string::utf8(b"Computer Science"),
+            string::utf8(b"CC-BY-4.0"),
+            14,
+            string::utf8(b"sha256:v2"),
+            string::utf8(b"walrus_blob_v2"),
+            string::utf8(b"walrus_blob_object_v2"),
+            string::utf8(b"application/pdf"),
+            no_metadata(),
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_current_version(&series) == 2, 31);
+        assert!(publishing::version_count(&series) == 2, 32);
+        assert!(publishing::series_artifact_code(&series) == original_code, 33);
+        assert!(publishing::series_comments_tree_id(&series) == original_tree_id, 34);
+        assert!(publishing::series_likes_book_id(&series) == original_likes_book_id, 35);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let record = ts::take_shared<PreprintVersionRecord>(&scenario);
+        assert!(publishing::header_version(publishing::preprint_header(&record)) == 2, 36);
+        assert!(publishing::header_artifact_type(publishing::preprint_header(&record)) == publishing::artifact_type_preprint(), 37);
+        ts::return_shared(record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_two_preprint_reservations_have_distinct_codes_and_series_ids() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        let reservation1 = publishing::reserve_preprint_code(&root, &registry, &vault, &fee_manager, &clock_ref, ts::ctx(&mut scenario));
+        let reservation2 = publishing::reserve_preprint_code(&root, &registry, &vault, &fee_manager, &clock_ref, ts::ctx(&mut scenario));
+        let series_id1 = publishing::preprint_reservation_series_id(&reservation1);
+        let series_id2 = publishing::preprint_reservation_series_id(&reservation2);
+        assert!(series_id1 != series_id2, 38);
+        assert!(
+            publishing::preprint_reservation_artifact_code(&reservation1) !=
+                publishing::preprint_reservation_artifact_code(&reservation2),
+            39,
+        );
+        assert!(
+            publishing::preprint_reservation_artifact_code(&reservation1) ==
+                publishing::expected_artifact_code_for_testing(publishing::artifact_type_preprint(), 0, series_id1),
+            40,
+        );
+        assert!(
+            publishing::preprint_reservation_artifact_code(&reservation2) ==
+                publishing::expected_artifact_code_for_testing(publishing::artifact_type_preprint(), 0, series_id2),
+            41,
+        );
+        transfer::public_transfer(reservation1, USER1);
+        transfer::public_transfer(reservation2, USER1);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_non_preprint_publish_paths_still_work_with_outstanding_preprint_reservation() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    reserve_preprint_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_blog_post(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Blog title"), string::utf8(b"Blog summary"), vector[string::utf8(b"paperproof")], string::utf8(b"en"),
+            common_hash(), common_blob(), common_blob_object(), string::utf8(b"text/markdown"), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        publishing::publish_dataset(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Dataset title"), string::utf8(b"Dataset description"), string::utf8(b"csv"), 2, 1000, string::utf8(b"CC0"), vector[string::utf8(b"data")],
+            common_hash(), common_blob(), common_blob_object(), common_content_type(), no_metadata(), no_metadata(), option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let blog = ts::take_shared<BlogPostVersionRecord>(&scenario);
+        let dataset = ts::take_shared<DatasetVersionRecord>(&scenario);
+        assert!(publishing::header_artifact_type(publishing::blog_post_header(&blog)) == publishing::artifact_type_blog_post(), 42);
+        assert!(publishing::header_artifact_type(publishing::dataset_header(&dataset)) == publishing::artifact_type_dataset(), 43);
+        ts::return_shared(blog);
+        ts::return_shared(dataset);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 1, location = paperproof_publishing::publishing)]
+fun test_pause_rejects_preprint_reservation() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut root = ts::take_shared<PaperProofRoot>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let permit = ts::take_from_sender<OperatorPermit>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::set_paused(&mut root, &vault, &permit, true, &clock_ref, ts::ctx(&mut scenario));
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(permit, ADMIN);
+        ts::return_shared(root);
+        ts::return_shared(vault);
+    };
+
+    reserve_preprint_for_sender(&mut scenario, USER1);
+    abort 999
+}
+
+#[test]
+#[expected_failure(abort_code = 1, location = paperproof_publishing::publishing)]
+fun test_pause_rejects_reserved_preprint_finalize() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    reserve_preprint_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut root = ts::take_shared<PaperProofRoot>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let permit = ts::take_from_sender<OperatorPermit>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::set_paused(&mut root, &vault, &permit, true, &clock_ref, ts::ctx(&mut scenario));
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(permit, ADMIN);
+        ts::return_shared(root);
+        ts::return_shared(vault);
+    };
+
+    finalize_sender_preprint(&mut scenario, USER1);
+    abort 999
+}
+
+#[test]
+#[expected_failure(abort_code = 6, location = paperproof_publishing::publishing)]
+fun test_disabled_preprint_type_rejects_reserved_preprint_finalize() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let root = ts::take_shared<PaperProofRoot>(&scenario);
+    let registry = ts::take_shared<TypeRegistry>(&scenario);
+    ts::return_shared(registry);
+    ts::return_shared(root);
+
+    reserve_preprint_for_sender(&mut scenario, USER1);
+
+    init_governance_config(&mut scenario);
+    let proposal_object_id = create_and_finalize_publishing_proposal(
+        &mut scenario,
+        voting::action_set_artifact_type_enabled(),
+        publishing::artifact_type_preprint() as u64,
+        0,
+    );
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let mut registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let mut config = ts::take_shared<GovernanceConfig>(&scenario);
+        let mut proposal = ts::take_shared_by_id<Proposal>(&scenario, proposal_object_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::execute_artifact_type_enabled_proposal(
+            &root, &mut registry, &vault, &mut config, &mut proposal, &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(config);
+        ts::return_shared(proposal);
+    };
+
+    finalize_sender_preprint(&mut scenario, USER1);
+    abort 999
 }
 
 #[test]

@@ -62,6 +62,44 @@ without contending on a per-type shared object. Chain consumers should treat the
 The first version intentionally does not add on-chain author, tag, keyword, or
 license indexes. Those belong in events and off-chain indexers for now.
 
+## Preprint Reserved Code Flow
+
+Preprints are different from the other built-in artifact types because the
+public artifact code is intended to appear on the PDF itself before the final
+content package is committed to Walrus.
+
+For this reason, direct first-publication through `publish_preprint` is disabled.
+The preprint flow is:
+
+1. call `publishing::reserve_preprint_code`
+2. read `PreprintReservation.artifact_code` through
+   `publishing::preprint_reservation_artifact_code`
+3. stamp that code onto the PDF
+4. upload the stamped PDF or content package to Walrus
+5. call `publishing::finalize_reserved_preprint`
+
+`reserve_preprint_code` creates a `PreprintReservation` object and emits
+`PreprintCodeReservedEvent`. The reservation stores:
+
+- `reserver`
+- derived future `series_address`
+- reserved `artifact_code`
+- `created_at_ms`
+
+`finalize_reserved_preprint` consumes the reservation and claims the derived
+`ArtifactSeries` UID from the reservation object. The final
+`ArtifactSeries.artifact_code`, comments tree target key, and
+`ArtifactPublishedEvent.artifact_code` are all the same reserved code.
+
+Only the original reserver can finalize the reservation. A reservation can be
+transferred as an owned object, but possession alone does not allow a different
+address to finalize it. Protocol pause and disabled preprint type state are
+checked again at finalization time, so reserving a code does not bypass later
+protocol controls.
+
+All non-preprint artifact types continue to use their existing direct first
+publication entrypoints.
+
 ## Root And Registry Boundaries
 
 `PaperProofRoot` stores only protocol-level dependencies:

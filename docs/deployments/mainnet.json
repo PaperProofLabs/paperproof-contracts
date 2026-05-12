@@ -1,16 +1,17 @@
 {
   "schemaVersion": 1,
   "deployment": {
-    "name": "paperproof-mainnet-2026-05-08",
+    "name": "paperproof-mainnet-2026-05-13",
     "network": "mainnet",
     "rpcUrl": "https://fullnode.mainnet.sui.io:443",
-    "protocolVersion": "publishing-v2-governance-v2-comments-v2",
+    "protocolVersion": "publishing-v3-governance-v2-comments-v2",
     "packages": {
       "pprf": "0x5d2ec9829a9e116de7c2008281a90b96690beb2252af120ad05a25fe13fae0da",
       "governanceOriginal": "0x75923624e354789e995537e88afaab698bd405a61f91926e3f8837fb7cc6b5cf",
       "governance": "0xc1ced3b8ae5281eeeb8cdb5527978e294c54f14a7fd8d65e7e9502d4ffffb87e",
       "comments": "0xaef346fc40bf20af62f4bbbc1608ba2272e80e4ba3d716634026baa589e9aeba",
-      "publishing": "0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782"
+      "publishingOriginal": "0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782",
+      "publishing": "0xc9a75e4514db2a37df6f95b4e2b329c065ac6089953bd2c1c0a0c389835bd3d8"
     },
     "objects": {
       "root": "0x7dc6c78b276825499a2204b060394e80b81196eb1f77d2036b503a2cca15dd78",
@@ -38,9 +39,22 @@
       "0xaef346fc40bf20af62f4bbbc1608ba2272e80e4ba3d716634026baa589e9aeba"
     ],
     "publishing": [
-      "0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782"
+      "0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782",
+      "0xc9a75e4514db2a37df6f95b4e2b329c065ac6089953bd2c1c0a0c389835bd3d8"
     ]
   },
-  "updatedAt": "2026-05-08T00:00:00+08:00",
-  "minSdkVersion": "0.2.1"
+  "upgrades": {
+    "publishingV2": {
+      "date": "2026-05-13T01:42:01+08:00",
+      "transactionDigest": "FiavutiZGoDXWab4LRbHidVDcPb6piYq3mMvN212XMbX",
+      "previousPackage": "0xe67a6956f37c3182354189d9b77ca14058694aad82522da0c6cb91cfddee4782",
+      "newPackage": "0xc9a75e4514db2a37df6f95b4e2b329c065ac6089953bd2c1c0a0c389835bd3d8",
+      "upgradeCap": "0x8b3c6058f7d0e7641c958d02b3bb84b98a9c1b45304fc06f67c492b3f19ed143",
+      "upgradeCapVersionAfter": 2,
+      "rawOutput": "publishing/upgrade-mainnet-v2-2026-05-13.json",
+      "summary": "Adds reserved preprint code flow and disables direct preprint publishing."
+    }
+  },
+  "updatedAt": "2026-05-13T01:42:01+08:00",
+  "minSdkVersion": "0.2.3"
 }
