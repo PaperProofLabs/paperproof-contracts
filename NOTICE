@@ -2,7 +2,12 @@ PaperProof Notice
 
 This repository is made publicly available by PaperProof Labs for transparency,
 security review, research, evaluation, and interoperability with the official
-deployed PPRF token contract and the broader PaperProof ecosystem.
+deployed PaperProof protocol contracts and the broader PaperProof ecosystem.
+
+PaperProof Protocol refers to the open protocol layer and official deployed
+protocol instances. PaperProof Labs refers to the originating team and
+maintainer of the official interface, SDKs, reference indexer, documentation,
+and brand identity.
 
 Public availability of this repository does not mean that the Software is
 licensed under a permissive or open-source license. Use of the source code is
@@ -11,12 +16,31 @@ governed exclusively by the LICENSE file in the project root.
 No patent license is granted by access to this repository or by any public
 availability of the source code.
 
-For clarity, third parties may build independent software, interfaces, and
-frontends that interact with the official deployed PPRF token contract, so long
-as they do not copy, modify, distribute, redeploy, or commercialize this
-repository's source code except as expressly permitted by the LICENSE.
+For clarity, third parties may build independent applications, indexers,
+wallets, dashboards, agents, explorers, developer tools, and other integrations
+that interoperate with the official PaperProof protocol using public contract
+interfaces, SDKs, official deployment identifiers, object IDs, event schemas,
+and other factual protocol metadata, provided
+they do not copy official contract source code, misuse PaperProof marks,
+redeploy protected contract code as a competing implementation, or falsely
+claim official status.
+
+This notice is intended to protect the official PaperProof contract source,
+protocol implementation, operational records, and brand identity while keeping
+the official deployed protocol open for compatible Web3 applications,
+independent interfaces, indexers, analytics tools, and ecosystem entrypoints.
 
 No trademark rights, branding rights, or endorsement rights are granted by
 access to this repository.
+
+For protocol-use, event/object interpretation, user-content, official-interface
+non-display, and abuse-boundary notes, see
+docs/Protocol-Use-and-Abuse-Boundaries.md.
+
+For official account, authority, personal-address, and deployment-authority
+boundaries, see docs/Official-Accounts-and-Authority-Boundaries.md.
+
+For the distinction between pre-launch mainnet setup activity and formal public
+official operations, see docs/Official-Operations-Effective-Time.md.
 
 PaperProof Labs is a pseudonym for Jinliang Xu.

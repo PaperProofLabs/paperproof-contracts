@@ -188,7 +188,8 @@ Metadata extensions are useful for display and indexing, but they should not be 
 
 ## 12. Governance
 
-PPRF is the governance asset of PaperProof. Governance supports executable proposals and signal proposals.
+PPRF is the protocol governance, coordination, and participation asset of
+PaperProof. Governance supports executable proposals and signal proposals.
 
 Executable proposals can change protocol state when they pass and are executed through the correct entry point. Supported actions include fee changes, artifact type enablement, artifact type activation, fee recipient changes, operator nomination, operator-transfer cancellation, governance parameter changes, governance action enablement, direct authority mode changes, governance authority changes, and upgrade authority changes.
 
@@ -270,7 +271,12 @@ The SDK improves developer safety, but it is not the security root. Contracts re
 
 ## 20. PPRF Utility
 
-PPRF connects governance, proof of holding, fee policy, ecosystem participation, and future incentives.
+PPRF is part of the PaperProof protocol stack, not an external token bolted onto
+the system after the fact. It connects governance, coordination, proof of
+holding, fee policy, ecosystem participation, and future incentives. As
+PaperProof usage grows, PPRF gains protocol relevance through decisions,
+participation, contribution recognition, and ecosystem alignment rather than
+through a standalone token narrative.
 
 Its current core roles are proposal creation, voting power, locked-token voting flows, proof-of-holding checks for lightweight participation such as likes, and governance control over fees, authority, and executable actions.
 

@@ -4,15 +4,15 @@ Copyright (c) 2026 PaperProof Labs. All rights reserved.
 
 1. Overview
 
-This Software is made publicly available for transparency, security review, research, evaluation, interoperability, and integration with the official deployed PPRF token contract and the broader PaperProof ecosystem. Except for the limited permissions expressly granted in this License, no rights are granted to copy, modify, distribute, sublicense, commercialize, or deploy this Software or any derivative work.
+This Software is made publicly available for transparency, security review, research, evaluation, interoperability, and integration with the official deployed PaperProof protocol contracts and the broader PaperProof ecosystem. Except for the limited permissions expressly granted in this License, no rights are granted to copy, modify, distribute, sublicense, commercialize, or deploy this Software or any derivative work.
 
 2. Definitions
 
 "Software" means the source code, smart contract code, interface definitions, configuration files, documentation, and other materials in this repository, excluding third-party components that are separately licensed.
 
-"Official Deployed Contract" means the smart contract instance deployed by or under the authority of the copyright holder as the official PPRF token contract of the PaperProof project.
+"Official Deployed Contracts" means the smart contract instances deployed by or under the authority of the copyright holder as the official PaperProof protocol contracts.
 
-"Permitted Interface Use" means interacting with the Official Deployed Contract, including building software, wallets, explorers, clients, indexers, analytics tools, or frontends that call, query, display, or otherwise interoperate with the Official Deployed Contract through its public interfaces.
+"Permitted Interface Use" means interacting with the Official Deployed Contracts, including building software, wallets, explorers, clients, indexers, analytics tools, or frontends that call, query, display, or otherwise interoperate with the Official Deployed Contracts through their public interfaces.
 
 "Derivative Work" means any modified, adapted, translated, transformed, or extended version of the Software, and any software substantially based on the protected expression of the Software.
 
@@ -22,7 +22,7 @@ Subject to the terms of this License, you are granted a limited, revocable, non-
 
 a. view, download, and locally store the Software for personal, internal, research, evaluation, educational, auditing, and security review purposes; and
 
-b. engage in Permitted Interface Use with the Official Deployed Contract, including developing independent frontends, dashboards, wallets, indexers, analytics tools, and other software that interoperates with the Official Deployed Contract without copying or modifying the Software.
+b. engage in Permitted Interface Use with the Official Deployed Contracts, including developing independent frontends, dashboards, wallets, indexers, analytics tools, and other software that interoperates with the Official Deployed Contracts without copying or modifying the Software.
 
 4. Restrictions
 
@@ -44,7 +44,7 @@ g. represent any unofficial deployment, fork, token instance, or interface as be
 
 5. Third-Party Frontends and Integrations
 
-For clarity, this License does not prohibit independent software from calling, querying, indexing, displaying, or otherwise interoperating with the Official Deployed Contract, so long as such software does not copy, modify, distribute, or redeploy the Software in violation of this License.
+For clarity, this License does not prohibit independent software from calling, querying, indexing, displaying, or otherwise interoperating with the Official Deployed Contracts, so long as such software does not copy, modify, distribute, or redeploy the Software in violation of this License.
 
 6. No Trademark License
 

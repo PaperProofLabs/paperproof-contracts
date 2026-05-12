@@ -15,7 +15,14 @@ architecture.
 
 ## 1. Core Positioning
 
-At the current stage of the protocol, `PPRF` should be understood primarily as:
+At the current stage of the protocol, `PPRF` should be understood as part of the
+PaperProof protocol stack. It is the protocol's governance, coordination, and
+long-term participation asset rather than an external token seeking unrelated
+utility. Its importance should grow with real PaperProof usage because protocol
+decisions, participation records, contribution recognition, and future incentive
+mechanisms are naturally connected to it.
+
+More specifically, `PPRF` should be understood primarily as:
 
 - the native governance-control token of the PaperProof ecosystem;
 - the legitimacy anchor for protocol-level decisions; and

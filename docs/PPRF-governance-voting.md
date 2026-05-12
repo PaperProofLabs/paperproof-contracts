@@ -5,6 +5,10 @@
 This document describes the implemented `PPRF` governance voting layer for the
 PaperProof protocol.
 
+`PPRF` is treated as part of the PaperProof protocol stack: the protocol's
+governance, coordination, and participation asset, not an external token bolted
+onto the system.
+
 The voting layer extends the existing `governance` package, which already
 provides:
 

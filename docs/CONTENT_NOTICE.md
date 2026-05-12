@@ -22,4 +22,14 @@ For questions about reuse, publication, licensing, or permission beyond the
 terms stated in this repository, separate written authorization is required
 from PaperProof Labs.
 
+For clarity, this documentation notice is not intended to prevent third parties
+from building independent applications, indexers, wallets, dashboards, agents,
+explorers, developer tools, or other integrations that interoperate with the
+official PaperProof protocol using public contract interfaces, SDKs, official
+deployment identifiers, object IDs, event schemas, and other factual protocol
+metadata. Such use must not copy protected
+PaperProof documentation as substitute materials, misuse PaperProof marks,
+redeploy protected contract code as a competing implementation, or falsely
+claim official status.
+
 PaperProof Labs is a pseudonym for Jinliang Xu.
