@@ -1287,6 +1287,14 @@ public fun root_type_registry_id(root: &PaperProofRoot): ID { root.type_registry
 public fun root_comments_tree_factory_cap_registry_id(root: &PaperProofRoot): ID {
     comments::tree_factory_cap_registry_id(&root.comments_tree_factory_cap)
 }
+public fun root_governance_action_executor_cap_registry_id(root: &PaperProofRoot): ID {
+    governance::action_executor_cap_registry_id(&root.governance_action_executor_cap)
+}
+public fun root_governance_action_executor_cap_vault_id(root: &PaperProofRoot): ID {
+    governance::action_executor_cap_governance_vault_id(&root.governance_action_executor_cap)
+}
+public fun type_registry_version(type_registry: &TypeRegistry): u64 { type_registry.version }
+public fun type_registry_registry_id(type_registry: &TypeRegistry): ID { type_registry.registry_id }
 
 public fun artifact_type_preprint(): u8 { artifact_types::preprint() }
 public fun artifact_type_blog_post(): u8 { artifact_types::blog_post() }
@@ -1305,8 +1313,20 @@ public fun artifact_type_name(artifact_type: u8): String {
     artifact_types::name(artifact_type)
 }
 
+public fun type_entry_exists(type_registry: &TypeRegistry, artifact_type: u8): bool {
+    table::contains(&type_registry.types, artifact_type)
+}
+
 public fun type_enabled(type_registry: &TypeRegistry, artifact_type: u8): bool {
     table::borrow(&type_registry.types, artifact_type).enabled
+}
+
+public fun type_enabled_or_false(type_registry: &TypeRegistry, artifact_type: u8): bool {
+    if (table::contains(&type_registry.types, artifact_type)) {
+        table::borrow(&type_registry.types, artifact_type).enabled
+    } else {
+        false
+    }
 }
 
 public fun type_index_object_id(type_registry: &TypeRegistry, artifact_type: u8): ID {
@@ -1345,6 +1365,9 @@ public fun metadata_attribute(key: String, value: String): MetadataAttribute {
     validate_metadata_attribute(&attribute);
     attribute
 }
+
+public fun metadata_attribute_key(attribute: &MetadataAttribute): &String { &attribute.key }
+public fun metadata_attribute_value(attribute: &MetadataAttribute): &String { &attribute.value }
 
 public fun preprint_header(record: &PreprintVersionRecord): &CommonArtifactHeader { &record.header }
 public fun blog_post_header(record: &BlogPostVersionRecord): &CommonArtifactHeader { &record.header }
@@ -1813,6 +1836,44 @@ fun make_artifact_code(artifact_type: u8, epoch: u64, series_id: &ID): String {
 #[test_only]
 public fun init_for_testing(ctx: &mut TxContext) {
     init(ctx);
+}
+
+#[test_only]
+public fun init_share_local_objects_for_testing(
+    root: PaperProofRoot,
+    preprint_index: TypeIndex,
+    blog_post_index: TypeIndex,
+    technical_report_index: TypeIndex,
+    dataset_index: TypeIndex,
+    software_release_index: TypeIndex,
+    generic_file_index: TypeIndex,
+    type_registry: TypeRegistry,
+) {
+    transfer::share_object(root);
+    transfer::share_object(preprint_index);
+    transfer::share_object(blog_post_index);
+    transfer::share_object(technical_report_index);
+    transfer::share_object(dataset_index);
+    transfer::share_object(software_release_index);
+    transfer::share_object(generic_file_index);
+    transfer::share_object(type_registry);
+}
+
+#[test_only]
+public fun init_share_governance_for_testing(
+    fee_manager: FeeManager,
+    vault: GovernanceVault,
+) {
+    governance::share_fee_manager(fee_manager);
+    governance::share_vault(vault);
+}
+
+#[test_only]
+public fun init_transfer_operator_for_testing(
+    operator_permit: OperatorPermit,
+    sender: address,
+) {
+    transfer::public_transfer(operator_permit, sender);
 }
 
 #[test_only]

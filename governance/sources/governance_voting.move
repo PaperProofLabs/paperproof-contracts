@@ -744,12 +744,20 @@ public fun active_proposal_id(config: &GovernanceConfig): option::Option<u64> {
     config.active_proposal_id
 }
 
+public fun proposal_binding_exists(config: &GovernanceConfig, proposal_id: u64): bool {
+    table::contains(&config.proposal_id_to_object, proposal_id)
+}
+
 public fun proposal_object_id(config: &GovernanceConfig, proposal_id: u64): ID {
     *table::borrow(&config.proposal_id_to_object, proposal_id)
 }
 
 public fun proposal_id(proposal: &Proposal): u64 {
     proposal.proposal_id
+}
+
+public fun proposal_registry_id(proposal: &Proposal): ID {
+    proposal.registry_id
 }
 
 public fun proposal_version(proposal: &Proposal): u64 {
@@ -800,6 +808,14 @@ public fun proposal_end_epoch(proposal: &Proposal): u64 {
     proposal.end_epoch
 }
 
+public fun proposal_payload_u64_1(proposal: &Proposal): u64 {
+    proposal.payload_u64_1
+}
+
+public fun proposal_payload_u64_2(proposal: &Proposal): u64 {
+    proposal.payload_u64_2
+}
+
 public fun remaining_voting_supply(config: &GovernanceConfig, proposal: &Proposal): u64 {
     config.pprf_total_supply - proposal.yes_votes - proposal.no_votes
 }
@@ -819,6 +835,23 @@ public fun vote_power_of(proposal: &Proposal, voter: address): u64 {
     } else {
         0
     }
+}
+
+public fun vote_side_of_or_zero(proposal: &Proposal, voter: address): u8 {
+    if (table::contains(&proposal.votes, voter)) {
+        let vote = table::borrow(&proposal.votes, voter);
+        vote.side
+    } else {
+        0
+    }
+}
+
+public fun vote_side_yes(): u8 {
+    VOTE_SIDE_YES
+}
+
+public fun vote_side_no(): u8 {
+    VOTE_SIDE_NO
 }
 
 public fun can_claim_locked_tokens(proposal: &Proposal, voter: address): bool {

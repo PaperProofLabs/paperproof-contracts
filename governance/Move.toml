@@ -4,8 +4,8 @@ edition = "2024"
 version = "0.0.1"
 
 [dependencies]
-openzeppelin_access = { git = "https://github.com/OpenZeppelin/contracts-sui.git", subdir = "contracts/access", rev = "0a996c95e2a7de700e61a434186709cd04f101f3" }
-pprf = { local = "../../PPRF-token-contracts" }
+openzeppelin_access = { local = "../../../sui-depends/contracts-sui/contracts/access" }
+pprf = { local = "../../../sui-depends/PPRF-token-contracts" }
 
 [addresses]
 paperproof_governance = "0x0"

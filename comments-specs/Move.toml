@@ -1,0 +1,11 @@
+[package]
+name = "paperproof_comments_specs"
+version = "0.0.1"
+edition = "2024.beta"
+
+[dependencies]
+paperproof_comments = { local = "../comments" }
+Prover = { local = "./vendor/prover", override = true }
+
+[addresses]
+specs = "0x0"

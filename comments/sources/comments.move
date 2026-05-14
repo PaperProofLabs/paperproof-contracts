@@ -582,6 +582,14 @@ public fun owner(tree: &CommentsTree): address {
     tree.owner
 }
 
+public fun tree_owned_by(tree: &CommentsTree, owner: address): bool {
+    tree.owner == owner
+}
+
+public fun comment_owned_by(tree: &CommentsTree, comment_id: u64, author: address): bool {
+    table::contains(&tree.nodes, comment_id) && table::borrow(&tree.nodes, comment_id).author == author
+}
+
 public fun registry_id(tree: &CommentsTree): ID {
     tree.registry_id
 }
@@ -694,6 +702,10 @@ public fun parent_comment_id(node: &CommentNode): &Option<u64> {
 
 public fun comment_author(node: &CommentNode): address {
     node.author
+}
+
+public fun comment_status_is(tree: &CommentsTree, comment_id: u64, status: u8): bool {
+    table::contains(&tree.nodes, comment_id) && table::borrow(&tree.nodes, comment_id).status == status
 }
 
 public fun comment_depth(node: &CommentNode): u16 {

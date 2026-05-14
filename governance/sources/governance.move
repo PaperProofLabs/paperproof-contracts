@@ -348,6 +348,10 @@ public fun operator_epoch(permit: &OperatorPermit): u64 {
     permit.operator_epoch
 }
 
+public fun operator_permit_registry_matches(permit: &OperatorPermit, registry_id: ID): bool {
+    permit.registry_id == registry_id
+}
+
 public fun fee_recipient(vault: &GovernanceVault): address {
     vault.fee_recipient
 }
@@ -362,6 +366,10 @@ public fun direct_authority_permanently_disabled(vault: &GovernanceVault): bool 
 
 public fun action_executor_cap_registry_id(cap: &GovernanceActionExecutorCap): ID {
     cap.registry_id
+}
+
+public fun action_executor_cap_governance_vault_id(cap: &GovernanceActionExecutorCap): ID {
+    cap.governance_vault_id
 }
 
 public fun new_vault_with_action_executor_cap(
@@ -643,6 +651,27 @@ public fun collect_artifact_fee(
     )
 }
 
+#[test_only]
+public fun collect_artifact_fee_accounting_for_testing(
+    vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    artifact_type: u8,
+    payer: address,
+): u64 {
+    assert_current_vault(vault);
+    assert!(fee_manager.registry_id == vault.registry_id, E_INVALID_REGISTRY);
+    let required_amount = artifact_fee_amount(fee_manager, artifact_type);
+    event::emit(FeeCollectedEvent {
+        registry_id: vault.registry_id,
+        fee_key: artifact_type,
+        artifact_type,
+        payer,
+        recipient: vault.fee_recipient,
+        amount: required_amount,
+    });
+    required_amount
+}
+
 public fun collect_comments_fee(
     vault: &GovernanceVault,
     fee_manager: &FeeManager,
@@ -900,6 +929,30 @@ fun nominate_operator_internal(
     });
 }
 
+#[test_only]
+public fun nominate_operator_state_for_testing(
+    vault: &mut GovernanceVault,
+    new_operator: address,
+    nominated_by: address,
+    wrapper_id: ID,
+) {
+    assert!(!vault.has_pending_operator_transfer, E_PENDING_OPERATOR_TRANSFER_EXISTS);
+    assert!(new_operator != @0x0, E_INVALID_OPERATOR);
+
+    let new_epoch = vault.active_operator_epoch + 1;
+    vault.pending_operator = new_operator;
+    vault.pending_operator_epoch = new_epoch;
+    vault.has_pending_operator_transfer = true;
+    vault.pending_operator_wrapper_id = wrapper_id;
+    event::emit(OperatorNominatedEvent {
+        registry_id: vault.registry_id,
+        nominated_by,
+        new_operator,
+        operator_epoch: new_epoch,
+        pending_operator_wrapper_id: wrapper_id,
+    });
+}
+
 public fun accept_operator_transfer(
     vault: &mut GovernanceVault,
     request: PendingOwnershipTransfer<OperatorPermit>,
@@ -924,6 +977,28 @@ public fun accept_operator_transfer(
     event::emit(OperatorTransferAcceptedEvent {
         registry_id: vault.registry_id,
         accepted_by: tx_context::sender(ctx),
+        operator_epoch: vault.active_operator_epoch,
+        operator_wrapper_id,
+    });
+}
+
+#[test_only]
+public fun accept_operator_transfer_state_for_testing(
+    vault: &mut GovernanceVault,
+    accepted_by: address,
+) {
+    assert!(vault.has_pending_operator_transfer, E_NO_PENDING_OPERATOR_TRANSFER);
+    let operator_wrapper_id = vault.pending_operator_wrapper_id;
+
+    vault.active_operator = vault.pending_operator;
+    vault.active_operator_epoch = vault.pending_operator_epoch;
+    vault.pending_operator = @0x0;
+    vault.pending_operator_epoch = 0;
+    vault.pending_operator_wrapper_id = object::id_from_address(@0x0);
+    vault.has_pending_operator_transfer = false;
+    event::emit(OperatorTransferAcceptedEvent {
+        registry_id: vault.registry_id,
+        accepted_by,
         operator_epoch: vault.active_operator_epoch,
         operator_wrapper_id,
     });
@@ -955,6 +1030,29 @@ public fun cancel_operator_transfer(
     event::emit(OperatorTransferCancelledEvent {
         registry_id: vault.registry_id,
         cancelled_by: tx_context::sender(ctx),
+        pending_operator,
+        pending_operator_epoch,
+        pending_operator_wrapper_id,
+    });
+}
+
+#[test_only]
+public fun cancel_operator_transfer_state_for_testing(
+    vault: &mut GovernanceVault,
+    cancelled_by: address,
+) {
+    assert!(vault.has_pending_operator_transfer, E_NO_PENDING_OPERATOR_TRANSFER);
+    let pending_operator = vault.pending_operator;
+    let pending_operator_epoch = vault.pending_operator_epoch;
+    let pending_operator_wrapper_id = vault.pending_operator_wrapper_id;
+
+    vault.pending_operator = @0x0;
+    vault.pending_operator_epoch = 0;
+    vault.pending_operator_wrapper_id = object::id_from_address(@0x0);
+    vault.has_pending_operator_transfer = false;
+    event::emit(OperatorTransferCancelledEvent {
+        registry_id: vault.registry_id,
+        cancelled_by,
         pending_operator,
         pending_operator_epoch,
         pending_operator_wrapper_id,

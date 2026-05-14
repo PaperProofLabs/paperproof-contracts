@@ -1,0 +1,10 @@
+[package]
+name = 'Prover'
+edition = '2024.beta'
+
+[dependencies]
+MoveStdlib = { local = '../../../../../sui-depends/sui/crates/sui-framework/packages/move-stdlib', override = true }
+Sui = { local = '../../../../../sui-depends/sui/crates/sui-framework/packages/sui-framework', override = true }
+
+[addresses]
+prover = '0x0'
