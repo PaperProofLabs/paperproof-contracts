@@ -731,3 +731,70 @@ Good first formalization targets:
 - add-version preserves series identity
 - comments tree and likes book remain correctly bound to series
 - registry equality across publishing, comments, and governance objects
+
+---
+
+## 8. Review-Driven Additions
+
+The following additions come from `Formal-Specification-Checklist-Review.md`.
+They are phrased as protocol-shaped requirements rather than implementation-only
+checks, and should be folded into future prover work without disturbing the
+existing checklist numbering above.
+
+### P0
+
+201. `P0-201` Artifact-code uniqueness within a deployment and artifact-type
+     namespace:
+     within one official deployment and one artifact-type namespace, two
+     distinct canonical series can never share the same `artifact_code`.
+
+202. `P0-202` A preprint reservation can be finalized at most once:
+     after one successful reserved-preprint finalize path consumes a given
+     reservation, no later successful official path can finalize that same
+     reservation again.
+
+203. `P0-203` Preprint series can only be created through reserve/finalize:
+     no official protocol path other than canonical preprint reservation
+     followed by canonical finalize may create a canonical preprint series.
+
+204. `P0-204` Every live series satisfies
+     `current_version == length(version_ids)`:
+     current version counters cannot diverge from the append-only version list
+     length.
+
+205. `P0-205` `version_ids` is append-only, duplicate-free, and
+     ancestry-consistent:
+     successful official version creation never removes prior version IDs,
+     never inserts duplicates, and always extends one continuous prior-version
+     chain without cycles.
+
+206. `P0-206` Historical version content fields are immutable after creation:
+     after a typed version record is successfully created, no later official
+     path may mutate its canonical content binding fields such as
+     `content_hash`, `walrus_blob_id`, `walrus_blob_object_id`, or
+     `content_type`.
+
+207. `P0-207` Objects from different registries cannot be mixed into a
+     successful official path:
+     root, registry, vault, fee manager, governance config, proposal, comments
+     tree, likes book, reservation, and typed-version flows from different
+     registries can never be combined into a successful canonical operation.
+
+208. `P0-208` Pause semantics are complete and explicit across the protocol
+     surface:
+     the protocol must define and preserve the exact pause boundary across
+     publishing, add-version, comment creation, governance execution, and vote
+     claim paths, with no unofficial bypass through an unclassified entrypoint.
+
+### P1
+
+209. `P1-209` Metadata extensions cannot override canonical typed fields:
+     metadata extensions are supplementary only and can never semantically
+     replace or contradict canonical typed fields such as title, authors,
+     abstract, version number, filename, or other type-specific primary fields.
+
+210. `P1-210` Owner transfer does not rewrite historical identity:
+     transferring current control of a series or its associated objects can
+     change future control rights only, and can never rewrite historical
+     version authorship, historical comment authorship, or historical like
+     identity.
