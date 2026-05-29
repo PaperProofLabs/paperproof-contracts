@@ -78,3 +78,19 @@ boundaries, see
 For the distinction between pre-launch mainnet setup activity and formal public
 official operations, see
 [docs/Official-Operations-Effective-Time.md](./docs/Official-Operations-Effective-Time.md).
+
+## Formal verification
+
+PaperProof completed a dedicated Sui Prover formal-verification baseline for
+the four core project-side logic modules: `publishing`, `comments`,
+`governance`, and `governance_voting`.
+
+The complete proof workspace is preserved on the `formal-verification-merge`
+evidence branch at commit
+`67ae94f8836060f499186600255e9a010b602b2c`. The `main` branch intentionally
+keeps only the production contract packages and a short verification summary,
+so normal builds, deployments, and tests are not affected by prover-only
+packages or local Sui Prover workflow files.
+
+For the main-branch summary and evidence pointers, see
+[docs/Formal-Verification.md](./docs/Formal-Verification.md).

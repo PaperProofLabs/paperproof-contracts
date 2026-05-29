@@ -65,6 +65,10 @@ Current documents include:
 - `Versioned-Upgrade-Design.md`: current versioned-upgrade preparation,
   migration hooks, version guards, and the expected future package-upgrade
   workflow
+- `Formal-Verification.md`: main-branch summary of the completed Sui Prover
+  formal-verification baseline, with pointers to the dedicated
+  `formal-verification-merge` evidence branch and consolidated verification
+  commit
 
 Unless otherwise expressly stated, all documentation and materials in this
 directory are governed by the repository root `LICENSE`, `NOTICE`, and
