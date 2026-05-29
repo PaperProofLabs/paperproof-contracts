@@ -69,6 +69,10 @@ Current documents include:
   formal-verification baseline, with pointers to the dedicated
   `formal-verification-merge` evidence branch and consolidated verification
   commit
+- `Native-Prompts-Mainnet-2026-05-17.md`: mainnet record for native Copilot
+  prompts stored as `generic_file` artifacts, the lightweight
+  `prompt_registry`, version policy, authority model, app integration path, and
+  deployed object IDs
 
 Unless otherwise expressly stated, all documentation and materials in this
 directory are governed by the repository root `LICENSE`, `NOTICE`, and

@@ -29,26 +29,31 @@ The preprint path is the primary example.
 
 ## Files
 
-- [mainnet-functional-test.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/mainnet-functional-test.mjs)
+- [mainnet-functional-test.mjs](./mainnet-functional-test.mjs)
   - validates the deployment and runs the full mainnet smoke flow
   - writes JSON artifacts and markdown logs
   - includes a PPRF protection path that attempts to settle an active proposal
     and return temporary balances if the script fails
-- [paperproof-mainnet-common.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/paperproof-mainnet-common.mjs)
+- [paperproof-mainnet-common.mjs](./paperproof-mainnet-common.mjs)
   - current deployment constants
   - account loading
   - read helpers
   - transaction helpers for publishing, comments, likes, metadata, ownership,
     governance, and coin transfers
-- [mainnet-governance-finalize.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/mainnet-governance-finalize.mjs)
+- [mainnet-governance-finalize.mjs](./mainnet-governance-finalize.mjs)
   - older standalone finalize utility kept for reference
   - the main flow now uses early settlement and normally does not need a next
     epoch finalize step
+- [mainnet-native-prompts.mjs](./mainnet-native-prompts.mjs)
+  - publishes the official app Copilot prompt as a PaperProof `generic_file`
+    prompt package
+  - registers `paperproof-app/copilot/global` in the deployed prompt registry
+  - writes a summary under `artifacts/native-prompts`
 
 Runtime outputs are written to:
 
-- [artifacts](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/artifacts)
-- [logs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/logs)
+- [artifacts](./artifacts)
+- [logs](./logs)
 
 These runtime files are ignored by Git.
 
@@ -109,9 +114,9 @@ The latest successful run was:
 
 - run id: `mainnet-current-smoke-2026-05-07T17-29-30-998Z`
 - artifact:
-  [artifacts/mainnet-current-smoke-2026-05-07T17-29-30-998Z.json](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/artifacts/mainnet-current-smoke-2026-05-07T17-29-30-998Z.json)
+  [artifacts/mainnet-current-smoke-2026-05-07T17-29-30-998Z.json](./artifacts/mainnet-current-smoke-2026-05-07T17-29-30-998Z.json)
 - log:
-  [logs/mainnet-current-smoke-2026-05-07T17-29-30-998Z.md](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/logs/mainnet-current-smoke-2026-05-07T17-29-30-998Z.md)
+  [logs/mainnet-current-smoke-2026-05-07T17-29-30-998Z.md](./logs/mainnet-current-smoke-2026-05-07T17-29-30-998Z.md)
 - PPRF guard delta: `0`
 
 Created example objects from that run:
@@ -133,7 +138,7 @@ Created example objects from that run:
 
 ## Frontend Reference Notes
 
-Use [paperproof-mainnet-common.mjs](D:/Works/VscodeProject/PaperProofLabs/paperproof-contracts/jstest/paperproof-mainnet-common.mjs)
+Use [paperproof-mainnet-common.mjs](./paperproof-mainnet-common.mjs)
 as the reference for:
 
 - building `MetadataAttribute` values with `publishing::metadata_attribute`
@@ -147,3 +152,26 @@ as the reference for:
 For production frontend code, keep private-key loading out of the browser. The
 transaction-building shapes in this harness are the useful part; signing should
 come from wallet adapters.
+
+## Native Prompt Operations
+
+The native prompt script is a mainnet write path for official operators. It
+extracts the current `copilotGlobalPrompt` from the app source, encodes it as
+`application/vnd.paperproof.prompt+json`, uploads the prompt package to Walrus,
+publishes the package as a PaperProof `generic_file`, and registers the
+resulting series/version with the prompt registry.
+
+Current mainnet prompt deployment:
+
+- prompt registry package:
+  `0x10b9c6e90a896dc3244d047e32724d80de0dc697b5ea12c5fdd8925131ed4c59`
+- prompt registry object:
+  `0x14ec45eb83bb1b0eb22c7e885c7c71ea05b1e22dd05e3e1107dcef528600b0da`
+- `copilot/global` prompt series:
+  `0x13c99b4811d9b89fd0decd8e9c713bafd639e6af3401a18043aed7e0270044fb`
+- first prompt version:
+  `0x8963dd3178bfe759c2301c921beca0aac88a8e1eb286685ff70e98c862b01e5e`
+
+Prompt registry writes are accepted only from the active operator recorded in
+the official `GovernanceVault`. They do not require a governance vote or an
+upgrade to the existing publishing/governance packages.
