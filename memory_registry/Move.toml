@@ -1,0 +1,10 @@
+[package]
+name = "paperproof_memory_registry"
+edition = "2024"
+version = "0.0.1"
+
+[dependencies]
+paperproof_governance = { local = "../governance" }
+
+[addresses]
+paperproof_memory_registry = "0x0"
