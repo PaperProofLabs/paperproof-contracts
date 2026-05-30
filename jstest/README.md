@@ -156,10 +156,12 @@ come from wallet adapters.
 ## Native Prompt Operations
 
 The native prompt script is a mainnet write path for official operators. It
-extracts the current `copilotGlobalPrompt` from the app source, encodes it as
+extracts the selected prompt export from the app source, encodes it as
 `application/vnd.paperproof.prompt+json`, uploads the prompt package to Walrus,
 publishes the package as a PaperProof `generic_file`, and registers the
-resulting series/version with the prompt registry.
+resulting series/version with the prompt registry. Use `--route=copilot/memory`
+to publish the Copilot memory descriptor route; the default route is
+`copilot/global`.
 
 Current mainnet prompt deployment:
 
@@ -171,6 +173,14 @@ Current mainnet prompt deployment:
   `0x13c99b4811d9b89fd0decd8e9c713bafd639e6af3401a18043aed7e0270044fb`
 - first prompt version:
   `0x8963dd3178bfe759c2301c921beca0aac88a8e1eb286685ff70e98c862b01e5e`
+- `copilot/memory` descriptor prompt series:
+  `0xd378b519436dcfe34b36f716b528b0b12350d08911ee294cd0248f1cd3dada9b`
+- first memory descriptor prompt version:
+  `0xc567595d30d3de61e4f8dfa7f4355194ca07671fb4bddd8dfc0921e3264f0353`
+- current memory descriptor prompt version:
+  `0x252f472c3bacb18927dc06cc366a909096be9dcfceb8cf41308238041e96c1c2`
+- current memory descriptor Walrus blob:
+  `Eih9iGzV1O9Q-dgmSnGj5zO2Ent6YokMsHvoeONP6ZY`
 
 Prompt registry writes are accepted only from the active operator recorded in
 the official `GovernanceVault`. They do not require a governance vote or an

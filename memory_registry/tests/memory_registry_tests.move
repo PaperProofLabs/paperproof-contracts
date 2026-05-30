@@ -61,12 +61,16 @@ fun entry_policy_availability_and_version_flow() {
             series_id,
             ts::ctx(&mut scenario),
         );
-        assert!(!memory_registry::entry_available(&entry), 3);
-        assert!(!memory_registry::is_entry_usable(&registry, &entry), 4);
+        assert!(memory_registry::entry_available(&entry), 3);
+        assert!(memory_registry::is_entry_usable(&registry, &entry), 4);
+
+        memory_registry::set_memory_availability(&registry, &vault, &mut entry, false, ts::ctx(&mut scenario));
+        assert!(!memory_registry::entry_available(&entry), 5);
+        assert!(!memory_registry::is_entry_usable(&registry, &entry), 6);
 
         memory_registry::set_memory_availability(&registry, &vault, &mut entry, true, ts::ctx(&mut scenario));
-        assert!(memory_registry::entry_available(&entry), 5);
-        assert!(memory_registry::is_entry_usable(&registry, &entry), 6);
+        assert!(memory_registry::entry_available(&entry), 15);
+        assert!(memory_registry::is_entry_usable(&registry, &entry), 16);
 
         let next_series = new_id(ts::ctx(&mut scenario));
         let pinned = new_id(ts::ctx(&mut scenario));

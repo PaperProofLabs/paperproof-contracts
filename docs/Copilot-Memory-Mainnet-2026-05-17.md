@@ -15,6 +15,8 @@ official Copilot availability.
 ## Mainnet Objects
 
 - Memory registry package:
+  `0xbe9527ee927c4a6dcb91d5503758cd731d311813cd70d93914f2bf58a36db3d1`
+- Original memory registry package:
   `0x816684a152fdee1e7f15f65d18873ed7ee48540e8bd4205b3197a5ec0feda2c6`
 - Memory registry shared object:
   `0x9a5beeb6610b33c06771c4152c039314784437e802e200afd2ce80fb88bdf9e2`
@@ -29,6 +31,18 @@ official Copilot availability.
   `GF9iaJatdhXP56KUuGNHeH19dBeTTy22vrBYSChMTjcE`
 - Enable MemWal provider policy:
   `H3WKZz3fuG6PfkZE8XGe1yoBgmoEw3sHSfwp1JSDivwy`
+- Upgrade memory registry package to version 2:
+  `ApesDHyse7VDWsEzxTFrWQyetygk9sJ9PmMs46ekL6UC`
+
+## Mainnet Upgrade 2026-05-30
+
+The memory registry package was upgraded in place to version 2 before public
+release. The shared `MemoryRegistry` object and the upgrade capability remain
+the same. The upgrade changes the default state of newly created
+`MemoryEntry` objects from unavailable to available, so a normal user-created
+official Copilot memory entry can be used immediately after creation. The
+active operator can still disable an entry by calling
+`set_memory_availability(..., false)`.
 
 ## Governance Binding
 
@@ -79,7 +93,7 @@ Each entry records:
 - MemWal account id and namespace root
 - descriptor artifact code and descriptor artifact series id
 - latest-or-pinned descriptor version policy
-- `available`, controlled by the active operator
+- `available`, defaulting to true on creation and controlled by the active operator
 - `owner_enabled` and `owner_deleted`, controlled by the entry owner
 
 Official Copilot should treat an entry as usable only when:
@@ -125,6 +139,58 @@ The official app uses these IDs by default and allows a user to:
 - create a chain `MemoryEntry` for official Copilot discovery;
 - delete/tombstone a chain `MemoryEntry` without touching MemWal/Walrus data.
 
+## Official App Usage Flow
+
+The official static app exposes Agent Memory through the Copilot settings
+panel. The user-facing controls map to the protocol model as follows:
+
+1. `Access` authorizes the current browser to use the connected wallet's
+   MemWal account. The app creates or reuses the wallet's MemWal account,
+   generates a local delegate key, and registers that delegate key with MemWal.
+   The private delegate key is stored only in the browser. If the user changes
+   browser or computer, they can run `Access` again with the same wallet.
+2. `Create` creates the official PaperProof `MemoryEntry` for the connected
+   wallet and `paperproof-app`. The app first ensures MemWal access, then writes
+   the governed discovery entry to the PaperProof memory registry. The registry
+   enforces at most one active entry per owner wallet and app id.
+3. `Enable` lets Copilot recall configured memory during answers in the current
+   browser. `Disable` pauses recall in the current browser. These are local app
+   controls and do not mutate the PaperProof registry.
+4. `Update` writes the latest user message or selected durable memory fact
+   through MemWal using the locally authorized delegate key. The private memory
+   body remains outside the PaperProof registry.
+5. Natural-language memory requests such as "please remember..." or "请记住..."
+   are treated as explicit memory-save requests when Agent Memory is enabled and
+   usable. The app writes the request to MemWal and returns a local confirmation.
+6. `Delete` tombstones the chain-side `MemoryEntry` and releases the active
+   slot so the wallet can create a replacement entry later. It does not delete
+   MemWal records or Walrus blobs.
+
+For official Copilot recall or update, the app checks the entry against the
+same conditions described in the Entry Model section: the entry must exist, be
+available, not be owner-deleted, not be owner-disabled, and use an enabled
+provider/schema policy. Ordinary users do not need to see or enter the MemWal
+account id, delegate key, namespace root, memory id, descriptor artifact code,
+descriptor series id, or memory entry id. The app derives or reads these values
+from wallet state, MemWal, the native prompt registry, and the memory registry.
+
+## Static Deployment Boundary
+
+The memory registry itself is fully on chain and does not require a backend.
+However, private memory recall and saving depend on the selected MemWal relayer
+being reachable from the browser. For local hackathon demonstrations, the
+official app can run under Vite dev server and use a local `/memwal-relayer`
+proxy to forward MemWal requests to `https://relayer.memwal.ai`. That proxy is
+only a local development/demo helper and is not part of a static deployment.
+
+When the app is deployed as static files, the browser calls the configured
+MemWal relayer directly. The relayer must therefore return CORS headers that
+allow the deployed PaperProof site origin. If the relayer does not allow that
+origin, this should not affect PaperProof chain reads, wallet signing, native
+prompt loading, `MemoryEntry` create/delete, or MemWal access/revoke
+transactions. Only private memory recall and memory saving should degrade, with
+`Update` or direct memory-save requests surfacing a MemWal relayer/CORS error.
+
 ## Verification
 
 Local and mainnet verification completed:
@@ -141,3 +207,6 @@ Local and mainnet verification completed:
 - chain reads confirmed the native prompt registry remains initialized and
   bound to the same root/vault
 - TypeScript SDK tests and app build were run after integration
+- version 2 upgrade dry-run succeeded before execution
+- version 2 upgrade completed on mainnet
+- post-upgrade `UpgradeCap.package` points to the version 2 package

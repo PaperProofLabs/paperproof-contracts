@@ -17,7 +17,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const OUTPUT_DIR = path.join(__dirname, 'artifacts', 'memory-registry');
 
-const MEMORY_REGISTRY_PACKAGE_ID = '0x816684a152fdee1e7f15f65d18873ed7ee48540e8bd4205b3197a5ec0feda2c6';
+const MEMORY_REGISTRY_PACKAGE_ID = '0xbe9527ee927c4a6dcb91d5503758cd731d311813cd70d93914f2bf58a36db3d1';
 const MEMORY_PROVIDER = 'memwal';
 
 async function createMemoryRegistry(rpcClient, signer) {
