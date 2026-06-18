@@ -34,19 +34,39 @@ const PROMPT_CONTENT_TYPE = 'application/vnd.paperproof.prompt+json';
 const PROMPT_APP_ID = 'paperproof-app';
 const PROMPT_ROUTES = {
   'copilot/global': {
-    exportName: 'copilotGlobalPrompt',
+    promptNames: ['copilotGlobalPrompt'],
     role: 'global',
     title: 'PaperProof native prompt: copilot/global',
     description: 'Native PaperProof Copilot global prompt package for the official static app.',
     fileName: 'paperproof-app-copilot-global.paperproof-prompt.json',
   },
   'copilot/memory': {
-    exportName: 'copilotMemoryDescriptorPrompt',
+    promptNames: ['copilotMemoryDescriptorPrompt'],
     role: 'memory_descriptor',
     title: 'PaperProof native prompt: copilot/memory',
     description: 'Native PaperProof Copilot memory descriptor prompt package for the official static app.',
     fileName: 'paperproof-app-copilot-memory.paperproof-prompt.json',
   },
+  explore: pagePrompt('explorePrompt', 'explore', 'Explore'),
+  type: pagePrompt('typePrompt', 'type', 'Type detail'),
+  artifact: pagePrompt('artifactPrompt', 'artifact', 'Artifact detail'),
+  'add-version': pagePrompt('addVersionPrompt', 'add-version', 'Add Version'),
+  publish: pagePrompt('publishPrompt', 'publish', 'Publish'),
+  'publish/preprints': publishPrompt('publishPreprintPrompt', 'preprints', 'Preprint'),
+  'publish/blog-posts': publishPrompt('publishBlogPostPrompt', 'blog-posts', 'Blog Post'),
+  'publish/technical-reports': publishPrompt('publishTechnicalReportPrompt', 'technical-reports', 'Technical Report'),
+  'publish/datasets': publishPrompt('publishDatasetPrompt', 'datasets', 'Dataset'),
+  'publish/software-releases': publishPrompt('publishSoftwareReleasePrompt', 'software-releases', 'Software Release'),
+  'publish/generic-files': publishPrompt('publishGenericFilePrompt', 'generic-files', 'Generic File'),
+  governance: pagePrompt('governancePrompt', 'governance', 'Governance'),
+  'create-proposal': pagePrompt('createProposalPrompt', 'create-proposal', 'Create Proposal'),
+  proposal: pagePrompt('proposalPrompt', 'proposal', 'Proposal detail'),
+  space: pagePrompt('spacePrompt', 'space', 'My Space'),
+  docs: pagePrompt('docsPrompt', 'docs', 'Docs'),
+  blog: pagePrompt('blogPrompt', 'blog', 'Blog'),
+  'blog-post': pagePrompt('blogPrompt', 'blog-post', 'Blog post'),
+  forum: pagePrompt('forumPrompt', 'forum', 'Forum'),
+  'forum-topic': pagePrompt('forumPrompt', 'forum-topic', 'Forum topic'),
 };
 
 const CURRENT_PROMPT_SERIES = {
@@ -54,19 +74,50 @@ const CURRENT_PROMPT_SERIES = {
   'copilot/memory': '0xd378b519436dcfe34b36f716b528b0b12350d08911ee294cd0248f1cd3dada9b',
 };
 
+const APP_PROMPT_MANIFEST_PATH = path.join(WORKSPACE_DIR, 'paperproof-app', 'public', 'prompts', 'manifest.json');
+
+function pagePrompt(promptName, routeSlug, label) {
+  return {
+    promptNames: [promptName],
+    role: 'page',
+    title: `PaperProof native prompt: ${routeSlug}`,
+    description: `Native PaperProof Copilot page prompt package for ${label}.`,
+    fileName: `paperproof-app-${routeSlug.replaceAll('/', '-')}.paperproof-prompt.json`,
+  };
+}
+
+function publishPrompt(promptName, routeSlug, label) {
+  return {
+    promptNames: ['publishPrompt', promptName],
+    role: 'publish_subtype',
+    title: `PaperProof native prompt: publish/${routeSlug}`,
+    description: `Native PaperProof Copilot publish subtype prompt package for ${label}.`,
+    fileName: `paperproof-app-publish-${routeSlug}.paperproof-prompt.json`,
+  };
+}
+
 function selectedRouteId() {
   const routeArg = process.argv.find((arg) => arg.startsWith('--route='));
   return routeArg ? routeArg.slice('--route='.length) : 'copilot/global';
+}
+
+function selectedRouteIds() {
+  if (process.argv.includes('--all')) return Object.keys(PROMPT_ROUTES);
+  const routesArg = process.argv.find((arg) => arg.startsWith('--routes='));
+  if (routesArg) return routesArg.slice('--routes='.length).split(',').map((item) => item.trim()).filter(Boolean);
+  return [selectedRouteId()];
 }
 
 function shouldAddVersion() {
   return process.argv.includes('--add-version');
 }
 
-function extractExportedTemplate(source, exportName) {
-  const marker = `export const ${exportName} = \``;
+function extractTemplate(source, constName) {
+  const exportedMarker = `export const ${constName} = \``;
+  const localMarker = `const ${constName} = \``;
+  const marker = source.includes(exportedMarker) ? exportedMarker : localMarker;
   const start = source.indexOf(marker);
-  if (start < 0) throw new Error(`${exportName} declaration not found.`);
+  if (start < 0) throw new Error(`${constName} declaration not found.`);
   let i = start + marker.length;
   let output = '';
   while (i < source.length) {
@@ -75,7 +126,11 @@ function extractExportedTemplate(source, exportName) {
     output += ch;
     i += 1;
   }
-  throw new Error(`${exportName} template literal was not closed.`);
+  throw new Error(`${constName} template literal was not closed.`);
+}
+
+function extractPrompt(source, routeConfig) {
+  return routeConfig.promptNames.map((name) => extractTemplate(source, name)).join('\n\n');
 }
 
 function promptPackage(routeId, routeConfig, prompt) {
@@ -233,19 +288,62 @@ function inputFileName(routeId) {
   return currentRouteConfig(routeId).fileName;
 }
 
+function summaryFileName(routeId) {
+  return `mainnet-native-prompts-${routeId.replaceAll('/', '-')}-summary.json`;
+}
+
+async function writeMergedAppManifest(entries) {
+  let current = {
+    schema_version: 1,
+    app_id: PROMPT_APP_ID,
+    registry_id: PROMPT_REGISTRY_OBJECT_ID,
+    entries: [],
+  };
+  try {
+    current = JSON.parse(await fs.readFile(APP_PROMPT_MANIFEST_PATH, 'utf8'));
+  } catch {
+    // Fresh manifest.
+  }
+  const byRoute = new Map((current.entries ?? []).map((entry) => [entry.route_id, entry]));
+  for (const entry of entries) byRoute.set(entry.route_id, entry);
+  const routeOrder = Object.keys(PROMPT_ROUTES);
+  const mergedEntries = [...byRoute.values()].sort((a, b) => {
+    const ai = routeOrder.indexOf(a.route_id);
+    const bi = routeOrder.indexOf(b.route_id);
+    if (ai === -1 && bi === -1) return a.route_id.localeCompare(b.route_id);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+  const manifest = {
+    schema_version: 1,
+    app_id: PROMPT_APP_ID,
+    registry_id: PROMPT_REGISTRY_OBJECT_ID,
+    entries: mergedEntries,
+  };
+  await writeJson(APP_PROMPT_MANIFEST_PATH, manifest);
+  return manifest;
+}
+
 async function main() {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  currentRouteId = selectedRouteId();
-  const routeConfig = currentRouteConfig(currentRouteId);
-  const addVersion = shouldAddVersion();
-  const existingSeriesId = CURRENT_PROMPT_SERIES[currentRouteId];
-  if (addVersion && !existingSeriesId) throw new Error(`No current prompt series configured for route ${currentRouteId}.`);
   const accounts = loadAccountsFromEnv();
   const signer = accounts[3].signer;
   const { rpcClient } = createClients();
 
   const source = await fs.readFile(APP_PROMPTS_PATH, 'utf8');
-  const pkg = promptPackage(currentRouteId, routeConfig, extractExportedTemplate(source, routeConfig.exportName));
+  const routeIds = selectedRouteIds();
+  const forceAddVersion = shouldAddVersion();
+  const manifestEntries = [];
+  const publishedRoutes = [];
+
+  for (const routeId of routeIds) {
+    currentRouteId = routeId;
+    const routeConfig = currentRouteConfig(currentRouteId);
+    const existingSeriesId = CURRENT_PROMPT_SERIES[currentRouteId];
+    const addVersion = forceAddVersion || Boolean(existingSeriesId);
+    if (addVersion && !existingSeriesId) throw new Error(`No current prompt series configured for route ${currentRouteId}.`);
+    const pkg = promptPackage(currentRouteId, routeConfig, extractPrompt(source, routeConfig));
   const bytes = new TextEncoder().encode(`${JSON.stringify(pkg, null, 2)}\n`);
   const localPath = path.join(OUTPUT_DIR, routeConfig.fileName);
   await fs.writeFile(localPath, bytes);
@@ -291,9 +389,42 @@ async function main() {
     seriesCurrentVersionId: seriesFields.current_version_id,
     versionHeader: versionFields.header?.fields ?? versionFields.header,
   };
-  const summaryPath = path.join(OUTPUT_DIR, 'mainnet-native-prompts-summary.json');
-  await writeJson(summaryPath, summary);
-  console.log(`Summary: ${summaryPath}`);
+    const routeSummaryPath = path.join(OUTPUT_DIR, summaryFileName(currentRouteId));
+    await writeJson(routeSummaryPath, summary);
+    const summaryPath = path.join(OUTPUT_DIR, 'mainnet-native-prompts-summary.json');
+    await writeJson(summaryPath, summary);
+    console.log(`Summary: ${routeSummaryPath}`);
+    manifestEntries.push({
+      route_id: currentRouteId,
+      series_id: published.series_id,
+      use_latest: true,
+      pinned_version_id: null,
+      role: routeConfig.role,
+      content_type: PROMPT_CONTENT_TYPE,
+    });
+    publishedRoutes.push(summary);
+  }
+
+  if (manifestEntries.length) {
+    await writeMergedAppManifest(manifestEntries);
+    const batchSummaryPath = path.join(OUTPUT_DIR, 'mainnet-native-prompts-batch-summary.json');
+    await writeJson(batchSummaryPath, {
+      promptRegistryPackageId: PROMPT_REGISTRY_PACKAGE_ID,
+      promptRegistryObjectId: PROMPT_REGISTRY_OBJECT_ID,
+      appPromptManifest: APP_PROMPT_MANIFEST_PATH,
+      routeCount: manifestEntries.length,
+      routes: publishedRoutes.map((item) => ({
+        routeId: item.routeId,
+        operation: item.operation,
+        seriesId: item.seriesId,
+        versionId: item.versionId,
+        contentHash: item.contentHash,
+        transactions: item.transactions,
+      })),
+    });
+    console.log(`App prompt manifest: ${APP_PROMPT_MANIFEST_PATH}`);
+    console.log(`Batch summary: ${batchSummaryPath}`);
+  }
 }
 
 main().catch((error) => {
