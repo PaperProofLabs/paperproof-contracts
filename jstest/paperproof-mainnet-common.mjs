@@ -65,6 +65,7 @@ export const COMMENTS = Object.freeze({
 export const GOVERNANCE = Object.freeze({
   proposalTypeSignal: 2,
   actionSignalFeatureDirection: 102,
+  actionSignalPolicyPosition: 103,
   statusActive: 1,
   statusPassed: 2,
   statusRejected: 3,
@@ -99,6 +100,7 @@ function isRetryableError(error) {
     message.includes('timeout') ||
     message.includes('econnreset') ||
     message.includes('socket hang up') ||
+    message.includes('internal error') ||
     message.includes('temporarily unavailable') ||
     message.includes('needs to be rebuilt') ||
     message.includes('unavailable for consumption') ||
@@ -762,7 +764,7 @@ export async function createSignalProposal(rpcClient, signer, input) {
     arguments: [
       tx.object(CONTRACTS.governanceConfigId),
       tx.pure.u8(GOVERNANCE.proposalTypeSignal),
-      tx.pure.u8(GOVERNANCE.actionSignalFeatureDirection),
+      tx.pure.u8(input.actionType ?? GOVERNANCE.actionSignalFeatureDirection),
       tx.pure.string(input.title),
       tx.pure.string(input.description),
       tx.pure.u64('0'),
@@ -777,6 +779,16 @@ export async function createSignalProposal(rpcClient, signer, input) {
   const event = getEventBySuffix(executed.result, '::ProposalCreatedEvent');
   if (!event?.parsedJson) throw new Error('ProposalCreatedEvent not found.');
   return { ...event.parsedJson, raw: executed.result };
+}
+
+export async function voteYes(rpcClient, signer, proposalObjectId, amountRaw, expectFailure = false) {
+  const tx = new Transaction();
+  const voteCoin = await coinArgumentCovering(rpcClient, signer, tx, CONTRACTS.pprfType, amountRaw);
+  tx.moveCall({
+    target: contractTarget(CONTRACTS.governancePackageId, 'governance_voting', 'vote_yes'),
+    arguments: [tx.object(proposalObjectId), voteCoin],
+  });
+  return executeTransaction(rpcClient, signer, tx, `vote YES on ${proposalObjectId}`, { expectFailure });
 }
 
 export async function voteNo(rpcClient, signer, proposalObjectId, amountRaw, expectFailure = false) {
