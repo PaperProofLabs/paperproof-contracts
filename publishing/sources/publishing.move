@@ -5,6 +5,11 @@ module paperproof_publishing::publishing;
 
 use std::string::{Self as string, String};
 
+use paperproof_shared_controller::controller::{
+    Self as controller,
+    ArtifactControlRecord,
+    ControllerNFT,
+};
 use paperproof_publishing::artifact_types;
 use paperproof_publishing::validation;
 use paperproof_comments::comments::{Self as comments, CommentsTree, LikesBook, TreeFactoryCap};
@@ -43,6 +48,7 @@ const E_EMPTY_METADATA_KEY: u64 = 27;
 const E_METADATA_TEXT_TOO_LONG: u64 = 28;
 const E_DUPLICATE_METADATA_KEY: u64 = 29;
 const E_DIRECT_PREPRINT_PUBLISH_DISABLED: u64 = 30;
+const E_INVALID_CONTROLLER_MIRROR_TARGET: u64 = 31;
 
 const PAPERPROOF_ROOT_VERSION: u64 = 1;
 const TYPE_REGISTRY_VERSION: u64 = 1;
@@ -52,6 +58,8 @@ const MAX_VERSIONS_PER_SERIES: u64 = 168;
 const MAX_METADATA_ATTRIBUTES: u64 = 4;
 const MAX_METADATA_KEY_BYTES: u64 = 64;
 const MAX_METADATA_VALUE_BYTES: u64 = 511;
+const SERIES_DESCRIPTION_KEY_BYTES: vector<u8> = b"series_description";
+const VERSION_CHANGE_NOTE_KEY_BYTES: vector<u8> = b"version_change_note";
 
 const SERIES_STATUS_ACTIVE: u8 = 0;
 const SERIES_STATUS_LOCKED: u8 = 1;
@@ -269,6 +277,22 @@ public struct ArtifactSeriesMetadataUpdatedEvent has copy, drop {
     updated_at_ms: u64,
 }
 
+public struct ArtifactSeriesDescriptionUpdatedEvent has copy, drop {
+    series_id: ID,
+    artifact_type: u8,
+    updated_by: address,
+    updated_at_ms: u64,
+}
+
+public struct ArtifactVersionChangeNoteRecordedEvent has copy, drop {
+    series_id: ID,
+    version_id: ID,
+    artifact_type: u8,
+    version: u64,
+    updated_by: address,
+    created_at_ms: u64,
+}
+
 public struct ArtifactTypeStatusChangedEvent has copy, drop {
     registry_id: ID,
     artifact_type: u8,
@@ -300,6 +324,15 @@ public struct TypeRegistryCreatedEvent has copy, drop {
     root_id: ID,
     type_registry_id: ID,
     created_by: address,
+}
+
+public struct ArtifactControllerPromotionEvent has copy, drop {
+    series_id: ID,
+    comments_tree_id: ID,
+    artifact_type: u8,
+    promoted_by: address,
+    authority_mode: u8,
+    promoted_at_ms: u64,
 }
 
 public struct TypeIndexCreatedEvent has copy, drop {
@@ -863,6 +896,58 @@ public fun add_preprint_version(
     });
 }
 
+public fun add_preprint_version_with_controller(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    abstract_text: String,
+    authors: vector<String>,
+    keywords: vector<String>,
+    field: String,
+    license: String,
+    page_count: u64,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    validate_long_text(&abstract_text);
+    validate_authors(&authors);
+    validate_keywords(&keywords);
+    validate_short_text(&field);
+    validate_short_text(&license);
+    assert_version_change_note_present(&version_metadata_extensions);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common_with_controller(
+        root, type_registry, series, control_record, controller_nft, governance_vault, fee_manager, artifact_types::preprint(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
+    );
+    emit_version_change_note_event(series, &header, version_id, ctx);
+    transfer::share_object(PreprintVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        abstract_text,
+        authors,
+        keywords,
+        field,
+        license,
+        page_count,
+    });
+}
+
 public fun add_blog_post_version(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
@@ -893,6 +978,43 @@ public fun add_blog_post_version(
         version_id,
         content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
+    transfer::share_object(BlogPostVersionRecord { id: version_uid, header, title, summary, tags, language });
+}
+
+public fun add_blog_post_version_with_controller(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    summary: String,
+    tags: vector<String>,
+    language: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    validate_medium_text(&summary);
+    validate_tags(&tags);
+    validate_short_text(&language);
+    assert_version_change_note_present(&version_metadata_extensions);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common_with_controller(
+        root, type_registry, series, control_record, controller_nft, governance_vault, fee_manager, artifact_types::blog_post(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
+    );
+    emit_version_change_note_event(series, &header, version_id, ctx);
     transfer::share_object(BlogPostVersionRecord { id: version_uid, header, title, summary, tags, language });
 }
 
@@ -945,6 +1067,59 @@ public fun add_technical_report_version(
     });
 }
 
+public fun add_technical_report_version_with_controller(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    abstract_text: String,
+    authors: vector<String>,
+    organization: String,
+    report_number: String,
+    keywords: vector<String>,
+    license: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    validate_long_text(&abstract_text);
+    validate_authors(&authors);
+    validate_keywords(&keywords);
+    validate_short_text(&organization);
+    validate_short_text(&report_number);
+    validate_short_text(&license);
+    assert_version_change_note_present(&version_metadata_extensions);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common_with_controller(
+        root, type_registry, series, control_record, controller_nft, governance_vault, fee_manager, artifact_types::technical_report(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
+    );
+    emit_version_change_note_event(series, &header, version_id, ctx);
+    transfer::share_object(TechnicalReportVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        abstract_text,
+        authors,
+        organization,
+        report_number,
+        keywords,
+        license,
+    });
+}
+
 public fun add_dataset_version(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
@@ -979,6 +1154,57 @@ public fun add_dataset_version(
         version_id,
         content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
     );
+    transfer::share_object(DatasetVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        description,
+        format,
+        file_count,
+        size_bytes,
+        license,
+        keywords,
+    });
+}
+
+public fun add_dataset_version_with_controller(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    description: String,
+    format: String,
+    file_count: u64,
+    size_bytes: u64,
+    license: String,
+    keywords: vector<String>,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    validate_long_text(&description);
+    validate_keywords(&keywords);
+    validate_short_text(&format);
+    validate_short_text(&license);
+    assert_version_change_note_present(&version_metadata_extensions);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common_with_controller(
+        root, type_registry, series, control_record, controller_nft, governance_vault, fee_manager, artifact_types::dataset(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
+    );
+    emit_version_change_note_event(series, &header, version_id, ctx);
     transfer::share_object(DatasetVersionRecord {
         id: version_uid,
         header,
@@ -1041,6 +1267,59 @@ public fun add_software_release_version(
     });
 }
 
+public fun add_software_release_version_with_controller(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    project_name: String,
+    version_name: String,
+    source_hash: String,
+    package_hash: String,
+    changelog: String,
+    license: String,
+    repository_url: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&project_name);
+    validate_short_text(&version_name);
+    validate_short_text(&source_hash);
+    validate_short_text(&package_hash);
+    validate_medium_text(&changelog);
+    validate_short_text(&license);
+    validate_medium_text(&repository_url);
+    assert_version_change_note_present(&version_metadata_extensions);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common_with_controller(
+        root, type_registry, series, control_record, controller_nft, governance_vault, fee_manager, artifact_types::software_release(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
+    );
+    emit_version_change_note_event(series, &header, version_id, ctx);
+    transfer::share_object(SoftwareReleaseVersionRecord {
+        id: version_uid,
+        header,
+        project_name,
+        version_name,
+        source_hash,
+        package_hash,
+        changelog,
+        license,
+        repository_url,
+    });
+}
+
 public fun add_generic_file_version(
     root: &PaperProofRoot,
     type_registry: &TypeRegistry,
@@ -1083,6 +1362,52 @@ public fun add_generic_file_version(
     });
 }
 
+public fun add_generic_file_version_with_controller(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    description: String,
+    filename: String,
+    file_size: u64,
+    license: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    validate_long_text(&description);
+    validate_short_text(&filename);
+    validate_short_text(&license);
+    assert_version_change_note_present(&version_metadata_extensions);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let header = add_version_common_with_controller(
+        root, type_registry, series, control_record, controller_nft, governance_vault, fee_manager, artifact_types::generic_file(),
+        version_id,
+        content_hash, walrus_blob_id, walrus_blob_object_id, content_type, version_metadata_extensions, payment, clock_ref, ctx,
+    );
+    emit_version_change_note_event(series, &header, version_id, ctx);
+    transfer::share_object(GenericFileVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        description,
+        filename,
+        file_size,
+        license,
+    });
+}
+
 public fun transfer_artifact_owner(
     series: &mut ArtifactSeries,
     comments_tree: &mut CommentsTree,
@@ -1091,6 +1416,7 @@ public fun transfer_artifact_owner(
     ctx: &mut TxContext,
 ) {
     assert_current_series(series);
+    controller::assert_series_legacy_write_allowed(&series.id);
     assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
     assert!(comments::tree_id(comments_tree) == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
     assert!(comments::target_series_id(comments_tree) == object::id(series), E_INVALID_COMMENTS_TREE);
@@ -1099,6 +1425,28 @@ public fun transfer_artifact_owner(
     comments::transfer_tree_owner(comments_tree, new_owner, ctx);
     series.owner = new_owner;
     series.updated_at_ms = clock::timestamp_ms(clock_ref);
+}
+
+public fun transfer_artifact_owner_with_controller(
+    series: &mut ArtifactSeries,
+    comments_tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &mut ControllerNFT,
+    new_owner: address,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_current_series(series);
+    assert!(comments::tree_id(comments_tree) == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_series_id(comments_tree) == object::id(series), E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_artifact_type(comments_tree) == series.artifact_type, E_INVALID_COMMENTS_TREE);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    controller::assert_controller_for_tree(comments::tree_uid(comments_tree), comments::tree_id(comments_tree), object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    assert!(new_owner == tx_context::sender(ctx), E_INVALID_CONTROLLER_MIRROR_TARGET);
+    comments::transfer_tree_owner_with_controller(comments_tree, control_record, controller_nft, new_owner, clock_ref, ctx);
+    series.owner = new_owner;
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
+    controller::sync_legacy_owner_mirrors(control_record, controller_nft, series.owner, comments::owner(comments_tree), clock_ref, ctx);
 }
 
 public fun set_paused(
@@ -1265,6 +1613,7 @@ public fun update_series_metadata_extensions(
     ctx: &mut TxContext,
 ) {
     assert_current_series(series);
+    controller::assert_series_legacy_write_allowed(&series.id);
     assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
     assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
     validate_metadata_extensions(&metadata_extensions);
@@ -1277,6 +1626,226 @@ public fun update_series_metadata_extensions(
         metadata_count: vector::length(&series.metadata_extensions),
         updated_at_ms: series.updated_at_ms,
     });
+}
+
+public fun update_series_metadata_extensions_with_controller(
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    metadata_extensions: vector<MetadataAttribute>,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_series(series);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
+    validate_metadata_extensions(&metadata_extensions);
+    assert_series_description_key_integrity(&metadata_extensions);
+    series.metadata_extensions = metadata_extensions;
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
+    controller::sync_legacy_series_owner_mirror(control_record, controller_nft, series.owner, clock_ref, ctx);
+    event::emit(ArtifactSeriesMetadataUpdatedEvent {
+        series_id: object::id(series),
+        artifact_type: series.artifact_type,
+        updated_by: tx_context::sender(ctx),
+        metadata_count: vector::length(&series.metadata_extensions),
+        updated_at_ms: series.updated_at_ms,
+    });
+}
+
+public fun update_series_description(
+    series: &mut ArtifactSeries,
+    description: String,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_current_series(series);
+    controller::assert_series_legacy_write_allowed(&series.id);
+    assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
+    assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
+    validate_long_text(&description);
+    series.metadata_extensions = upsert_metadata_attribute(
+        &series.metadata_extensions,
+        metadata_attribute(string::utf8(SERIES_DESCRIPTION_KEY_BYTES), description),
+    );
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
+    event::emit(ArtifactSeriesDescriptionUpdatedEvent {
+        series_id: object::id(series),
+        artifact_type: series.artifact_type,
+        updated_by: tx_context::sender(ctx),
+        updated_at_ms: series.updated_at_ms,
+    });
+}
+
+public fun update_series_description_with_controller(
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    description: String,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_series(series);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
+    validate_long_text(&description);
+    series.metadata_extensions = upsert_metadata_attribute(
+        &series.metadata_extensions,
+        metadata_attribute(string::utf8(SERIES_DESCRIPTION_KEY_BYTES), description),
+    );
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
+    controller::sync_legacy_series_owner_mirror(control_record, controller_nft, series.owner, clock_ref, ctx);
+    event::emit(ArtifactSeriesDescriptionUpdatedEvent {
+        series_id: object::id(series),
+        artifact_type: series.artifact_type,
+        updated_by: tx_context::sender(ctx),
+        updated_at_ms: series.updated_at_ms,
+    });
+}
+
+public fun promote_existing_series_to_dual_mode(
+    series: &mut ArtifactSeries,
+    comments_tree: &mut CommentsTree,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_current_series(series);
+    let series_id = object::id(series);
+    let comments_tree_id = comments::tree_id(comments_tree);
+    let comments_tree_owner = comments::owner(comments_tree);
+    let artifact_type = series.artifact_type;
+    let legacy_owner = series.owner;
+    assert!(comments_tree_id == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_series_id(comments_tree) == series_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_artifact_type(comments_tree) == artifact_type, E_INVALID_COMMENTS_TREE);
+    assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
+    let sender = tx_context::sender(ctx);
+    let artifact_code = series.artifact_code;
+    let artifact_type_name = artifact_types::name(artifact_type);
+    let (control_record, controller_nft) = controller::enable_control(
+        &mut series.id,
+        comments::tree_uid_mut(comments_tree),
+        series_id,
+        comments_tree_id,
+        artifact_code,
+        artifact_type_name,
+        artifact_type,
+        legacy_owner,
+        comments_tree_owner,
+        controller::authority_mode_dual(),
+        clock_ref,
+        ctx,
+    );
+    event::emit(ArtifactControllerPromotionEvent {
+        series_id,
+        comments_tree_id,
+        artifact_type,
+        promoted_by: sender,
+        authority_mode: controller::authority_mode_dual(),
+        promoted_at_ms: clock::timestamp_ms(clock_ref),
+    });
+    controller::share_record_and_transfer_nft(control_record, controller_nft, sender);
+}
+
+public fun promote_existing_series_to_controller_primary(
+    series: &mut ArtifactSeries,
+    comments_tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &mut ControllerNFT,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_series(series);
+    assert!(comments::tree_id(comments_tree) == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_series_id(comments_tree) == object::id(series), E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_artifact_type(comments_tree) == series.artifact_type, E_INVALID_COMMENTS_TREE);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    controller::set_authority_mode(
+        &mut series.id,
+        comments::tree_uid_mut(comments_tree),
+        control_record,
+        controller_nft,
+        controller::authority_mode_controller_primary(),
+        clock_ref,
+        ctx,
+    );
+    event::emit(ArtifactControllerPromotionEvent {
+        series_id: object::id(series),
+        comments_tree_id: comments::tree_id(comments_tree),
+        artifact_type: series.artifact_type,
+        promoted_by: tx_context::sender(ctx),
+        authority_mode: controller::authority_mode_controller_primary(),
+        promoted_at_ms: clock::timestamp_ms(clock_ref),
+    });
+}
+
+public fun promote_existing_series_to_controller_only(
+    series: &mut ArtifactSeries,
+    comments_tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &mut ControllerNFT,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_series(series);
+    assert!(comments::tree_id(comments_tree) == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_series_id(comments_tree) == object::id(series), E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_artifact_type(comments_tree) == series.artifact_type, E_INVALID_COMMENTS_TREE);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    controller::set_authority_mode(
+        &mut series.id,
+        comments::tree_uid_mut(comments_tree),
+        control_record,
+        controller_nft,
+        controller::authority_mode_controller_only(),
+        clock_ref,
+        ctx,
+    );
+    event::emit(ArtifactControllerPromotionEvent {
+        series_id: object::id(series),
+        comments_tree_id: comments::tree_id(comments_tree),
+        artifact_type: series.artifact_type,
+        promoted_by: tx_context::sender(ctx),
+        authority_mode: controller::authority_mode_controller_only(),
+        promoted_at_ms: clock::timestamp_ms(clock_ref),
+    });
+}
+
+public fun sync_existing_series_control_mirrors(
+    series: &mut ArtifactSeries,
+    comments_tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_series(series);
+    assert!(comments::tree_id(comments_tree) == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_series_id(comments_tree) == object::id(series), E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_artifact_type(comments_tree) == series.artifact_type, E_INVALID_COMMENTS_TREE);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    controller::assert_controller_for_tree(comments::tree_uid(comments_tree), comments::tree_id(comments_tree), object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    controller::sync_legacy_owner_mirrors(control_record, controller_nft, series.owner, comments::owner(comments_tree), clock_ref, ctx);
+}
+
+public fun repair_existing_series_control_mirrors(
+    series: &mut ArtifactSeries,
+    comments_tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_series(series);
+    assert!(comments::tree_id(comments_tree) == series.comments_tree_id, E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_series_id(comments_tree) == object::id(series), E_INVALID_COMMENTS_TREE);
+    assert!(comments::target_artifact_type(comments_tree) == series.artifact_type, E_INVALID_COMMENTS_TREE);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    controller::assert_controller_for_tree(comments::tree_uid(comments_tree), comments::tree_id(comments_tree), object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    series.owner = tx_context::sender(ctx);
+    comments::transfer_tree_owner_with_controller(comments_tree, control_record, controller_nft, tx_context::sender(ctx), clock_ref, ctx);
+    series.updated_at_ms = clock::timestamp_ms(clock_ref);
+    controller::repair_legacy_owner_mirrors(control_record, controller_nft, series.owner, comments::owner(comments_tree), clock_ref, ctx);
 }
 
 public fun root_version(root: &PaperProofRoot): u64 { root.version }
@@ -1327,9 +1896,19 @@ public fun series_comments_tree_id(series: &ArtifactSeries): ID { series.comment
 public fun series_likes_book_id(series: &ArtifactSeries): ID { series.likes_book_id }
 public fun series_status(series: &ArtifactSeries): u8 { series.status }
 public fun series_ui_status(series: &ArtifactSeries): u8 { series.ui_status }
+public fun series_control_enabled(series: &ArtifactSeries): bool { controller::is_series_control_enabled(&series.id) }
+public fun series_authority_mode(series: &ArtifactSeries): u8 { controller::series_authority_mode(&series.id) }
+public fun series_in_dual_mode(series: &ArtifactSeries): bool { controller::is_series_in_dual_mode(&series.id) }
+public fun series_in_controller_primary_mode(series: &ArtifactSeries): bool { controller::is_series_in_controller_primary_mode(&series.id) }
+public fun series_in_controller_only_mode(series: &ArtifactSeries): bool { controller::is_series_in_controller_only_mode(&series.id) }
+public fun series_control_record_id(series: &ArtifactSeries): Option<ID> { controller::series_control_record_id(&series.id) }
+public fun series_controller_nft_id(series: &ArtifactSeries): Option<ID> { controller::series_controller_nft_id(&series.id) }
 public fun series_metadata_count(series: &ArtifactSeries): u64 { vector::length(&series.metadata_extensions) }
 public fun series_metadata_key_at(series: &ArtifactSeries, index: u64): String { vector::borrow(&series.metadata_extensions, index).key }
 public fun series_metadata_value_at(series: &ArtifactSeries, index: u64): String { vector::borrow(&series.metadata_extensions, index).value }
+public fun series_description(series: &ArtifactSeries): Option<String> {
+    find_metadata_value(&series.metadata_extensions, string::utf8(SERIES_DESCRIPTION_KEY_BYTES))
+}
 public fun version_count(series: &ArtifactSeries): u64 { vector::length(&series.version_ids) }
 public fun version_id_at(series: &ArtifactSeries, index: u64): ID { *vector::borrow(&series.version_ids, index) }
 public fun header_series_id(header: &CommonArtifactHeader): ID { header.series_id }
@@ -1339,6 +1918,9 @@ public fun header_content_hash(header: &CommonArtifactHeader): String { header.c
 public fun header_metadata_count(header: &CommonArtifactHeader): u64 { vector::length(&header.metadata_extensions) }
 public fun header_metadata_key_at(header: &CommonArtifactHeader, index: u64): String { vector::borrow(&header.metadata_extensions, index).key }
 public fun header_metadata_value_at(header: &CommonArtifactHeader, index: u64): String { vector::borrow(&header.metadata_extensions, index).value }
+public fun header_version_change_note(header: &CommonArtifactHeader): Option<String> {
+    find_metadata_value(&header.metadata_extensions, string::utf8(VERSION_CHANGE_NOTE_KEY_BYTES))
+}
 
 public fun metadata_attribute(key: String, value: String): MetadataAttribute {
     let attribute = MetadataAttribute { key, value };
@@ -1382,7 +1964,7 @@ fun publish_common(
     let series_id = *series_uid.as_inner();
     let artifact_code = make_artifact_code(artifact_type, tx_context::epoch(ctx), &series_id);
 
-    let (comments_tree, likes_book) = comments::new_tree(
+    let (mut comments_tree, likes_book) = comments::new_tree(
         &root.comments_tree_factory_cap,
         object::id(root),
         root.governance_vault_id,
@@ -1399,7 +1981,7 @@ fun publish_common(
 
     let mut version_ids = vector::empty<ID>();
     vector::push_back(&mut version_ids, version_id);
-    let series = ArtifactSeries {
+    let mut series = ArtifactSeries {
         id: series_uid,
         version: ARTIFACT_SERIES_VERSION,
         artifact_type,
@@ -1416,6 +1998,23 @@ fun publish_common(
         created_at_ms: now,
         updated_at_ms: now,
     };
+
+    let artifact_code = series.artifact_code;
+    let artifact_type_name = artifact_types::name(artifact_type);
+    let (control_record, controller_nft) = controller::enable_control(
+        &mut series.id,
+        comments::tree_uid_mut(&mut comments_tree),
+        series_id,
+        comments_tree_id,
+        artifact_code,
+        artifact_type_name,
+        artifact_type,
+        sender,
+        sender,
+        controller::authority_mode_dual(),
+        clock_ref,
+        ctx,
+    );
 
     let header = CommonArtifactHeader {
         series_id,
@@ -1446,6 +2045,8 @@ fun publish_common(
         likes_book_id,
         created_at_ms: now,
     });
+
+    controller::share_record_and_transfer_nft(control_record, controller_nft, sender);
 
     (series, header, comments_tree, likes_book)
 }
@@ -1483,7 +2084,7 @@ fun publish_reserved_preprint_common(
     let series_id = *series_uid.as_inner();
     assert!(series_id == object::id_from_address(series_address), E_INVALID_INDEX);
 
-    let (comments_tree, likes_book) = comments::new_tree(
+    let (mut comments_tree, likes_book) = comments::new_tree(
         &root.comments_tree_factory_cap,
         object::id(root),
         root.governance_vault_id,
@@ -1500,7 +2101,7 @@ fun publish_reserved_preprint_common(
 
     let mut version_ids = vector::empty<ID>();
     vector::push_back(&mut version_ids, version_id);
-    let series = ArtifactSeries {
+    let mut series = ArtifactSeries {
         id: series_uid,
         version: ARTIFACT_SERIES_VERSION,
         artifact_type: artifact_types::preprint(),
@@ -1517,6 +2118,23 @@ fun publish_reserved_preprint_common(
         created_at_ms: now,
         updated_at_ms: now,
     };
+
+    let artifact_code = series.artifact_code;
+    let artifact_type_name = artifact_types::name(artifact_types::preprint());
+    let (control_record, controller_nft) = controller::enable_control(
+        &mut series.id,
+        comments::tree_uid_mut(&mut comments_tree),
+        series_id,
+        comments_tree_id,
+        artifact_code,
+        artifact_type_name,
+        artifact_types::preprint(),
+        sender,
+        sender,
+        controller::authority_mode_dual(),
+        clock_ref,
+        ctx,
+    );
 
     let header = CommonArtifactHeader {
         series_id,
@@ -1547,6 +2165,8 @@ fun publish_reserved_preprint_common(
         likes_book_id,
         created_at_ms: now,
     });
+
+    controller::share_record_and_transfer_nft(control_record, controller_nft, sender);
 
     (series, header, comments_tree, likes_book)
 }
@@ -1579,6 +2199,7 @@ fun add_version_common(
     assert!(series.artifact_type == artifact_type, E_INVALID_ARTIFACT_TYPE);
     assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
     assert!(vector::length(&series.version_ids) < MAX_VERSIONS_PER_SERIES, E_TOO_MANY_VERSIONS);
+    controller::assert_series_legacy_write_allowed(&series.id);
     assert!(tx_context::sender(ctx) == series.owner, E_NOT_OWNER);
     assert!(governance::registry_id(governance_vault) == object::id(root), E_INVALID_GOVERNANCE_VAULT);
     assert!(governance::fee_manager_registry_id(fee_manager) == object::id(root), E_INVALID_FEE_MANAGER);
@@ -1596,6 +2217,88 @@ fun add_version_common(
     series.current_version_id = version_id;
     vector::push_back(&mut series.version_ids, version_id);
     series.updated_at_ms = now;
+
+    let header = CommonArtifactHeader {
+        series_id: object::id(series),
+        artifact_type,
+        version: new_version,
+        previous_version_id: option::some(old_version_id),
+        author: sender,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        metadata_extensions: version_metadata_extensions,
+        status: VERSION_STATUS_VALID,
+        created_at_ms: now,
+    };
+
+    event::emit(ArtifactVersionAddedEvent {
+        series_id: object::id(series),
+        old_version_id,
+        new_version_id: version_id,
+        artifact_type,
+        artifact_code: series.artifact_code,
+        author: sender,
+        content_hash: header.content_hash,
+        walrus_blob_id: header.walrus_blob_id,
+        content_type: header.content_type,
+        version: new_version,
+        created_at_ms: now,
+    });
+
+    header
+}
+
+fun add_version_common_with_controller(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    series: &mut ArtifactSeries,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    artifact_type: u8,
+    version_id: ID,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+): CommonArtifactHeader {
+    assert_current_root(root);
+    assert_current_registry(type_registry);
+    assert_current_series(series);
+    assert!(!root.paused, E_PAUSED);
+    assert!(object::id(type_registry) == root.type_registry_id, E_INVALID_INDEX);
+    assert!(type_registry.registry_id == object::id(root), E_INVALID_INDEX);
+    let type_info = table::borrow(&type_registry.types, artifact_type);
+    assert!(type_info.enabled, E_ARTIFACT_TYPE_DISABLED);
+    assert!(series.artifact_type == artifact_type, E_INVALID_ARTIFACT_TYPE);
+    assert!(series.status == SERIES_STATUS_ACTIVE, E_INVALID_STATUS);
+    assert!(vector::length(&series.version_ids) < MAX_VERSIONS_PER_SERIES, E_TOO_MANY_VERSIONS);
+    controller::assert_controller_for_series(&series.id, object::id(series), series.artifact_type, control_record, controller_nft, ctx);
+    assert!(governance::registry_id(governance_vault) == object::id(root), E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_registry_id(fee_manager) == object::id(root), E_INVALID_FEE_MANAGER);
+    assert!(object::id(governance_vault) == root.governance_vault_id, E_INVALID_GOVERNANCE_VAULT);
+    assert!(governance::fee_manager_id(fee_manager) == root.fee_manager_id, E_INVALID_FEE_MANAGER);
+    validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
+    validate_metadata_extensions(&version_metadata_extensions);
+    assert_version_change_note_present(&version_metadata_extensions);
+    governance::collect_artifact_fee(governance_vault, fee_manager, artifact_type, payment, ctx);
+
+    let now = clock::timestamp_ms(clock_ref);
+    let sender = tx_context::sender(ctx);
+    let old_version_id = series.current_version_id;
+    let new_version = series.current_version + 1;
+    series.current_version = new_version;
+    series.current_version_id = version_id;
+    vector::push_back(&mut series.version_ids, version_id);
+    series.updated_at_ms = now;
+    controller::sync_legacy_series_owner_mirror(control_record, controller_nft, series.owner, clock_ref, ctx);
 
     let header = CommonArtifactHeader {
         series_id: object::id(series),
@@ -1800,6 +2503,73 @@ fun validate_metadata_extensions(metadata_extensions: &vector<MetadataAttribute>
     };
 }
 
+fun assert_version_change_note_present(metadata_extensions: &vector<MetadataAttribute>) {
+    let note = find_metadata_value(metadata_extensions, string::utf8(VERSION_CHANGE_NOTE_KEY_BYTES));
+    assert!(option::is_some(&note), E_EMPTY_METADATA_KEY);
+    validate_long_text(option::borrow(&note));
+}
+
+fun assert_series_description_key_integrity(metadata_extensions: &vector<MetadataAttribute>) {
+    let description = find_metadata_value(metadata_extensions, string::utf8(SERIES_DESCRIPTION_KEY_BYTES));
+    if (option::is_some(&description)) {
+        validate_long_text(option::borrow(&description));
+    };
+}
+
+fun find_metadata_value(metadata_extensions: &vector<MetadataAttribute>, key: String): Option<String> {
+    let len = vector::length(metadata_extensions);
+    let mut i = 0;
+    while (i < len) {
+        let attribute = vector::borrow(metadata_extensions, i);
+        if (attribute.key == key) {
+            return option::some(attribute.value)
+        };
+        i = i + 1;
+    };
+    option::none()
+}
+
+fun upsert_metadata_attribute(
+    metadata_extensions: &vector<MetadataAttribute>,
+    attribute: MetadataAttribute,
+): vector<MetadataAttribute> {
+    let len = vector::length(metadata_extensions);
+    let mut result = vector[];
+    let mut updated = false;
+    let mut i = 0;
+    while (i < len) {
+        let existing = *vector::borrow(metadata_extensions, i);
+        if (existing.key == attribute.key) {
+            vector::push_back(&mut result, attribute);
+            updated = true;
+        } else {
+            vector::push_back(&mut result, existing);
+        };
+        i = i + 1;
+    };
+    if (!updated) {
+        vector::push_back(&mut result, attribute);
+    };
+    validate_metadata_extensions(&result);
+    result
+}
+
+fun emit_version_change_note_event(
+    series: &ArtifactSeries,
+    header: &CommonArtifactHeader,
+    version_id: ID,
+    ctx: &TxContext,
+) {
+    event::emit(ArtifactVersionChangeNoteRecordedEvent {
+        series_id: object::id(series),
+        version_id,
+        artifact_type: series.artifact_type,
+        version: header.version,
+        updated_by: tx_context::sender(ctx),
+        created_at_ms: header.created_at_ms,
+    });
+}
+
 fun validate_metadata_attribute(attribute: &MetadataAttribute) {
     assert!(string::length(&attribute.key) > 0, E_EMPTY_METADATA_KEY);
     assert!(string::length(&attribute.key) <= MAX_METADATA_KEY_BYTES, E_METADATA_TEXT_TOO_LONG);
@@ -1832,4 +2602,122 @@ public fun share_test_type_registry_with_same_registry_id(root: &PaperProofRoot,
     let type_registry_id = object::id(&type_registry);
     transfer::share_object(type_registry);
     type_registry_id
+}
+
+#[test_only]
+public fun publish_legacy_generic_file_for_testing(
+    root: &PaperProofRoot,
+    type_registry: &TypeRegistry,
+    governance_vault: &GovernanceVault,
+    fee_manager: &FeeManager,
+    title: String,
+    description: String,
+    filename: String,
+    file_size: u64,
+    license: String,
+    content_hash: String,
+    walrus_blob_id: String,
+    walrus_blob_object_id: String,
+    content_type: String,
+    series_metadata_extensions: vector<MetadataAttribute>,
+    version_metadata_extensions: vector<MetadataAttribute>,
+    payment: Option<Coin<SUI>>,
+    clock_ref: &Clock,
+    ctx: &mut TxContext,
+) {
+    validate_title(&title);
+    validate_long_text(&description);
+    validate_short_text(&filename);
+    validate_short_text(&license);
+    assert_publish_context(root, type_registry, governance_vault, fee_manager, artifact_types::generic_file());
+    validate_content_fields(&content_hash, &walrus_blob_id, &walrus_blob_object_id, &content_type);
+    validate_metadata_extensions(&series_metadata_extensions);
+    validate_metadata_extensions(&version_metadata_extensions);
+    governance::collect_artifact_fee(governance_vault, fee_manager, artifact_types::generic_file(), payment, ctx);
+
+    let now = clock::timestamp_ms(clock_ref);
+    let sender = tx_context::sender(ctx);
+    let version_uid = object::new(ctx);
+    let version_id = *version_uid.as_inner();
+    let series_uid = object::new(ctx);
+    let series_id = *series_uid.as_inner();
+    let artifact_code = make_artifact_code(artifact_types::generic_file(), tx_context::epoch(ctx), &series_id);
+
+    let (comments_tree, likes_book) = comments::new_tree(
+        &root.comments_tree_factory_cap,
+        object::id(root),
+        root.governance_vault_id,
+        root.fee_manager_id,
+        sender,
+        artifact_code,
+        series_id,
+        artifact_types::generic_file(),
+        clock_ref,
+        ctx,
+    );
+    let comments_tree_id = comments::tree_id(&comments_tree);
+    let likes_book_id = comments::likes_book_id(&likes_book);
+
+    let mut version_ids = vector[];
+    vector::push_back(&mut version_ids, version_id);
+    let series = ArtifactSeries {
+        id: series_uid,
+        version: ARTIFACT_SERIES_VERSION,
+        artifact_type: artifact_types::generic_file(),
+        artifact_code,
+        owner: sender,
+        current_version: 1,
+        current_version_id: version_id,
+        version_ids,
+        metadata_extensions: series_metadata_extensions,
+        comments_tree_id,
+        likes_book_id,
+        status: SERIES_STATUS_ACTIVE,
+        ui_status: UI_NORMAL,
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+
+    let header = CommonArtifactHeader {
+        series_id,
+        artifact_type: artifact_types::generic_file(),
+        version: 1,
+        previous_version_id: option::none(),
+        author: sender,
+        content_hash,
+        walrus_blob_id,
+        walrus_blob_object_id,
+        content_type,
+        metadata_extensions: version_metadata_extensions,
+        status: VERSION_STATUS_VALID,
+        created_at_ms: now,
+    };
+
+    event::emit(ArtifactPublishedEvent {
+        series_id,
+        version_id,
+        artifact_type: artifact_types::generic_file(),
+        artifact_code,
+        author: sender,
+        content_hash: header.content_hash,
+        walrus_blob_id: header.walrus_blob_id,
+        content_type: header.content_type,
+        version: 1,
+        comments_tree_id,
+        likes_book_id,
+        created_at_ms: now,
+    });
+
+    transfer::share_object(series);
+    comments::share_tree(comments_tree);
+    comments::share_likes_book(likes_book);
+    transfer::share_object(GenericFileVersionRecord {
+        id: version_uid,
+        header,
+        title,
+        description,
+        filename,
+        file_size,
+        license,
+    });
 }

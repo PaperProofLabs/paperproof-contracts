@@ -4,6 +4,7 @@ module paperproof_comments::comments_tests;
 use std::string;
 
 use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault};
+use paperproof_shared_controller::controller::{Self as controller, ArtifactControlRecord, ControllerNFT};
 use pprf::pprf::PPRF;
 use sui::clock;
 use sui::coin;
@@ -16,6 +17,10 @@ use paperproof_comments::comments::{Self, CommentsTree, LikesBook, TreeCreatedEv
 const ADMIN: address = @0xA;
 const USER1: address = @0xB;
 const USER2: address = @0xC;
+
+public struct DummySeries has key {
+    id: UID,
+}
 
 fun shared_tree(
     scenario: &mut ts::Scenario,
@@ -53,6 +58,79 @@ fun shared_tree(
     comments::share_tree(tree);
     comments::share_likes_book(likes_book);
     clock::destroy_for_testing(clock_ref);
+}
+
+fun controlled_tree_with_mode(
+    scenario: &mut ts::Scenario,
+    registry_id: ID,
+    owner: address,
+    paper_key: vector<u8>,
+    authority_mode: u8,
+) {
+    let (vault, permit) = governance::new_vault(
+        registry_id,
+        ADMIN,
+        ADMIN,
+        ts::ctx(scenario),
+    );
+    let governance_vault_id = object::id(&vault);
+    let fee_manager = governance::new_fee_manager(registry_id, ts::ctx(scenario));
+    let fee_manager_id = governance::fee_manager_id(&fee_manager);
+    let tree_factory_cap = comments::new_tree_factory_cap(&vault, &fee_manager, ts::ctx(scenario));
+    governance::share_vault(vault);
+    transfer::public_transfer(permit, ADMIN);
+    governance::share_fee_manager(fee_manager);
+    let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+    let dummy_series = DummySeries { id: object::new(ts::ctx(scenario)) };
+    let target_series_id = object::id(&dummy_series);
+    let (mut tree, likes_book) = comments::new_tree(
+        &tree_factory_cap,
+        registry_id,
+        governance_vault_id,
+        fee_manager_id,
+        owner,
+        string::utf8(paper_key),
+        target_series_id,
+        1,
+        &clock_ref,
+        ts::ctx(scenario),
+    );
+    let tree_id = comments::tree_id(&tree);
+    let mut dummy_series = dummy_series;
+    let (control_record, controller_nft) = controller::enable_control(
+        &mut dummy_series.id,
+        comments::tree_uid_mut(&mut tree),
+        target_series_id,
+        tree_id,
+        string::utf8(paper_key),
+        string::utf8(b"preprint"),
+        1,
+        owner,
+        owner,
+        authority_mode,
+        &clock_ref,
+        ts::ctx(scenario),
+    );
+    comments::share_tree(tree);
+    comments::share_likes_book(likes_book);
+    controller::share_record_and_transfer_nft(control_record, controller_nft, owner);
+    transfer::share_object(dummy_series);
+    clock::destroy_for_testing(clock_ref);
+}
+
+fun controlled_tree(
+    scenario: &mut ts::Scenario,
+    registry_id: ID,
+    owner: address,
+    paper_key: vector<u8>,
+) {
+    controlled_tree_with_mode(
+        scenario,
+        registry_id,
+        owner,
+        paper_key,
+        controller::authority_mode_controller_primary(),
+    );
 }
 
 #[test]
@@ -394,6 +472,254 @@ fun test_owner_transfer_updates_tree_governance() {
         );
         assert!(comments::tree_status(&tree) == comments::tree_status_locked(), 31);
         ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_controller_primary_tree_moderation_paths() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x120);
+
+    {
+        controlled_tree(
+            &mut scenario,
+            registry_id,
+            USER1,
+            b"PaperProof-2026-0020",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut control_record = ts::take_shared<ArtifactControlRecord>(&scenario);
+        let controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            0,
+            b"Controller-managed comment",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        comments::set_tree_status_with_controller(
+            &mut tree,
+            &mut control_record,
+            &controller_nft,
+            comments::tree_status_locked(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::tree_status(&tree) == comments::tree_status_locked(), 900);
+
+        comments::set_comment_status_with_controller(
+            &mut tree,
+            &mut control_record,
+            &controller_nft,
+            1,
+            comments::comment_status_hidden(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::status(comments::borrow_comment(&tree, 1)) == comments::comment_status_hidden(), 901);
+
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_dual_mode_preserves_legacy_tree_owner_moderation() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x122);
+
+    {
+        controlled_tree_with_mode(
+            &mut scenario,
+            registry_id,
+            USER1,
+            b"PaperProof-2026-0022",
+            controller::authority_mode_dual(),
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            0,
+            b"Legacy moderation still works",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        comments::set_comment_status(
+            &mut tree,
+            1,
+            comments::comment_status_hidden(),
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::status(comments::borrow_comment(&tree, 1)) == comments::comment_status_hidden(), 910);
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 6, location = paperproof_shared_controller::controller)]
+fun test_controller_primary_blocks_legacy_tree_owner_path() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x121);
+
+    {
+        controlled_tree(
+            &mut scenario,
+            registry_id,
+            USER1,
+            b"PaperProof-2026-0021",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        comments::set_tree_status(
+            &mut tree,
+            comments::tree_status_locked(),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 12, location = paperproof_comments::comments)]
+fun test_controller_primary_blocks_legacy_tree_owner_comment_moderation() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x123);
+
+    {
+        controlled_tree(
+            &mut scenario,
+            registry_id,
+            USER1,
+            b"PaperProof-2026-0023",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            0,
+            b"Comment from another user",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        comments::set_comment_status(
+            &mut tree,
+            1,
+            comments::comment_status_hidden(),
+            ts::ctx(&mut scenario),
+        );
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_controller_primary_preserves_author_self_delete() {
+    let mut scenario = ts::begin(ADMIN);
+    let registry_id = object::id_from_address(@0x124);
+
+    {
+        controlled_tree(
+            &mut scenario,
+            registry_id,
+            USER1,
+            b"PaperProof-2026-0024",
+        );
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            0,
+            b"My own comment",
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        comments::set_comment_status(
+            &mut tree,
+            1,
+            comments::comment_status_deleted(),
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::status(comments::borrow_comment(&tree, 1)) == comments::comment_status_deleted(), 911);
+
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
     };
 
     ts::end(scenario);

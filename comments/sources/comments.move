@@ -6,6 +6,8 @@
 
 module paperproof_comments::comments;
 
+use paperproof_shared_controller::controller;
+use paperproof_shared_controller::controller::{ArtifactControlRecord, ControllerNFT};
 use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault};
 use pprf::pprf::PPRF;
 use std::string::{Self as string, String};
@@ -493,11 +495,37 @@ public fun set_tree_status(
     ctx: &TxContext,
 ) {
     assert_current_tree(tree);
+    controller::assert_tree_legacy_write_allowed(&tree.id);
     assert_tree_owner(tree, ctx);
     assert_valid_tree_status(new_status);
 
     let old_status = tree.status;
     tree.status = new_status;
+
+    event::emit(TreeStatusChangedEvent {
+        registry_id: tree.registry_id,
+        tree_id: *tree.id.as_inner(),
+        changed_by: tx_context::sender(ctx),
+        old_status,
+        new_status,
+    });
+}
+
+public fun set_tree_status_with_controller(
+    tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    new_status: u8,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_tree(tree);
+    controller::assert_controller_for_tree(&tree.id, tree_id(tree), tree.target_series_id, tree.target_artifact_type, control_record, controller_nft, ctx);
+    assert_valid_tree_status(new_status);
+
+    let old_status = tree.status;
+    tree.status = new_status;
+    controller::sync_legacy_comments_owner_mirror(control_record, controller_nft, tree.owner, clock_ref, ctx);
 
     event::emit(TreeStatusChangedEvent {
         registry_id: tree.registry_id,
@@ -519,11 +547,62 @@ public fun set_comment_status(
     assert!(table::contains(&tree.nodes, comment_id), E_COMMENT_NOT_FOUND);
     assert!(comment_id != ROOT_COMMENT_ID, E_ROOT_COMMENT_IMMUTABLE);
 
+    let sender = tx_context::sender(ctx);
+    let legacy_tree_owner_allowed = !controller::is_tree_control_enabled(&tree.id) ||
+        controller::tree_authority_mode(&tree.id) == controller::authority_mode_dual() ||
+        controller::tree_authority_mode(&tree.id) == controller::authority_mode_legacy_owner_only();
+    let author_is_self_service_delete = {
+        let node_ref = table::borrow(&tree.nodes, comment_id);
+        sender == node_ref.author && new_status == COMMENT_STATUS_DELETED
+    };
+    assert!(
+        author_is_self_service_delete ||
+        (legacy_tree_owner_allowed && sender == tree.owner),
+        E_NOT_COMMENT_OWNER_OR_TREE_OWNER,
+    );
+
     let node = table::borrow_mut(&mut tree.nodes, comment_id);
     assert!(node.status != COMMENT_STATUS_DELETED, E_DELETED_COMMENT_FINAL);
+    let old_status = node.status;
+    node.status = new_status;
+    node.edited_at_ms = option::none<u64>();
+
+    event::emit(CommentStatusChangedEvent {
+        registry_id: tree.registry_id,
+        tree_id: *tree.id.as_inner(),
+        comment_id,
+        changed_by: tx_context::sender(ctx),
+        old_status,
+        new_status,
+    });
+}
+
+public fun set_comment_status_with_controller(
+    tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    comment_id: u64,
+    new_status: u8,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_tree(tree);
+    assert_valid_comment_status(new_status);
+    assert!(table::contains(&tree.nodes, comment_id), E_COMMENT_NOT_FOUND);
+    assert!(comment_id != ROOT_COMMENT_ID, E_ROOT_COMMENT_IMMUTABLE);
+
     let sender = tx_context::sender(ctx);
-    if (sender != tree.owner) {
-        assert!(sender == node.author, E_NOT_COMMENT_OWNER_OR_TREE_OWNER);
+    let mut controller_authorized = false;
+    if (controller::is_tree_control_enabled(&tree.id)) {
+        controller::assert_controller_for_tree(&tree.id, tree_id(tree), tree.target_series_id, tree.target_artifact_type, control_record, controller_nft, ctx);
+        controller::sync_legacy_comments_owner_mirror(control_record, controller_nft, tree.owner, clock_ref, ctx);
+        controller_authorized = true;
+    };
+    let node = table::borrow_mut(&mut tree.nodes, comment_id);
+    assert!(node.status != COMMENT_STATUS_DELETED, E_DELETED_COMMENT_FINAL);
+    if (!controller_authorized && sender != node.author) {
+        assert!(sender == tree.owner, E_NOT_COMMENT_OWNER_OR_TREE_OWNER);
+    } else if (!controller_authorized) {
         assert!(new_status == COMMENT_STATUS_DELETED, E_NOT_COMMENT_OWNER_OR_TREE_OWNER);
     };
 
@@ -547,6 +626,7 @@ public fun transfer_tree_owner(
     ctx: &TxContext,
 ) {
     assert_current_tree(tree);
+    controller::assert_tree_legacy_write_allowed(&tree.id);
     assert!(tx_context::sender(ctx) == tree.owner, E_NOT_TREE_OWNER);
     assert!(new_owner != @0x0, E_INVALID_NEW_OWNER);
 
@@ -560,6 +640,55 @@ public fun transfer_tree_owner(
         old_owner,
         new_owner,
     });
+}
+
+public fun transfer_tree_owner_with_controller(
+    tree: &mut CommentsTree,
+    control_record: &mut ArtifactControlRecord,
+    controller_nft: &ControllerNFT,
+    new_owner: address,
+    clock_ref: &Clock,
+    ctx: &TxContext,
+) {
+    assert_current_tree(tree);
+    controller::assert_controller_for_tree(&tree.id, tree_id(tree), tree.target_series_id, tree.target_artifact_type, control_record, controller_nft, ctx);
+    assert!(new_owner != @0x0, E_INVALID_NEW_OWNER);
+
+    let old_owner = tree.owner;
+    tree.owner = new_owner;
+    controller::sync_legacy_comments_owner_mirror(control_record, controller_nft, tree.owner, clock_ref, ctx);
+
+    event::emit(TreeOwnerTransferredEvent {
+        registry_id: tree.registry_id,
+        tree_id: *tree.id.as_inner(),
+        changed_by: tx_context::sender(ctx),
+        old_owner,
+        new_owner,
+    });
+}
+
+public fun tree_uid_mut(tree: &mut CommentsTree): &mut UID {
+    &mut tree.id
+}
+
+public fun tree_uid(tree: &CommentsTree): &UID {
+    &tree.id
+}
+
+public fun tree_control_enabled(tree: &CommentsTree): bool {
+    controller::is_tree_control_enabled(&tree.id)
+}
+
+public fun tree_authority_mode(tree: &CommentsTree): u8 {
+    controller::tree_authority_mode(&tree.id)
+}
+
+public fun tree_control_record_id(tree: &CommentsTree): Option<ID> {
+    controller::tree_control_record_id(&tree.id)
+}
+
+public fun tree_controller_nft_id(tree: &CommentsTree): Option<ID> {
+    controller::tree_controller_nft_id(&tree.id)
 }
 
 public fun tree_id(tree: &CommentsTree): ID {

@@ -6,6 +6,8 @@ use std::string;
 use paperproof_comments::comments::{Self as comments, CommentsTree, LikesBook};
 use paperproof_governance::governance::{Self as governance, FeeManager, GovernanceVault, OperatorPermit};
 use paperproof_governance::governance_voting::{Self as voting, GovernanceConfig, Proposal};
+use paperproof_shared_controller::controller::{Self as controller, ArtifactControlRecord, ControllerNFT};
+use paperproof_shared_controller::controller_marketplace;
 use paperproof_publishing::publishing::{
     Self as publishing,
     ArtifactSeries,
@@ -23,12 +25,16 @@ use paperproof_publishing::publishing::{
 use pprf::pprf::PPRF;
 use sui::clock;
 use sui::coin::{Self as coin, Coin};
+use sui::display::{Self as display, Display};
 use sui::sui::SUI;
 use sui::test_scenario as ts;
+use sui::transfer_policy::TransferPolicyCap;
+use sui::vec_map;
 
 const ADMIN: address = @0xA;
 const USER1: address = @0xB;
 const USER2: address = @0xC;
+const USER3: address = @0xD;
 const PROPOSER_THRESHOLD: u64 = 10_000_000_000_000_000;
 const QUORUM_PASS_VOTES: u64 = 1_500_000_000_000_000_000;
 
@@ -58,6 +64,10 @@ fun repeated_string(byte: u8, len: u64): string::String {
         i = i + 1;
     };
     string::utf8(bytes)
+}
+
+fun control_record_id(series: &ArtifactSeries): ID {
+    *option::borrow(&publishing::series_control_record_id(series))
 }
 
 fun advance_beyond_voting_period(scenario: &mut ts::Scenario, sender: address) {
@@ -172,6 +182,205 @@ fun finalize_sender_preprint(scenario: &mut ts::Scenario, sender: address) {
         ts::return_shared(vault);
         ts::return_shared(fee_manager);
     };
+}
+
+fun publish_legacy_generic_file_for_sender(scenario: &mut ts::Scenario, sender: address) {
+    ts::next_tx(scenario, sender);
+    {
+        let root = ts::take_shared<PaperProofRoot>(scenario);
+        let registry = ts::take_shared<TypeRegistry>(scenario);
+        let vault = ts::take_shared<GovernanceVault>(scenario);
+        let fee_manager = ts::take_shared<FeeManager>(scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+        publishing::publish_legacy_generic_file_for_testing(
+            &root,
+            &registry,
+            &vault,
+            &fee_manager,
+            string::utf8(b"Legacy generic file"),
+            string::utf8(b"Legacy description"),
+            string::utf8(b"legacy.zip"),
+            100,
+            string::utf8(b"MIT"),
+            common_hash(),
+            common_blob(),
+            common_blob_object(),
+            common_content_type(),
+            vector[metadata(b"series_description", b"Legacy summary")],
+            vector[metadata(b"legacy_note", b"v1 before controller")],
+            option::none(),
+            &clock_ref,
+            ts::ctx(scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+}
+
+fun add_comment_to_first_series_tree_for_sender(
+    scenario: &mut ts::Scenario,
+    sender: address,
+    content: vector<u8>,
+) {
+    ts::next_tx(scenario, sender);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(scenario);
+        let vault = ts::take_shared<GovernanceVault>(scenario);
+        let fee_manager = ts::take_shared<FeeManager>(scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+        comments::add_onchain_comment(
+            &mut tree,
+            &vault,
+            &fee_manager,
+            0,
+            content,
+            option::none(),
+            &clock_ref,
+            ts::ctx(scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(tree);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+}
+
+fun promote_first_legacy_series_to_dual_for_sender(scenario: &mut ts::Scenario, sender: address) {
+    ts::next_tx(scenario, sender);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(scenario);
+        let mut tree = ts::take_shared<CommentsTree>(scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+        assert!(!publishing::series_control_enabled(&series), 580);
+        assert!(publishing::series_comments_tree_id(&series) == comments::tree_id(&tree), 581);
+        publishing::promote_existing_series_to_dual_mode(
+            &mut series,
+            &mut tree,
+            &clock_ref,
+            ts::ctx(scenario),
+        );
+        assert!(publishing::series_in_dual_mode(&series), 582);
+        assert!(comments::tree_authority_mode(&tree) == controller::authority_mode_dual(), 583);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+    };
+}
+
+fun promote_first_series_to_controller_primary_for_sender(scenario: &mut ts::Scenario, sender: address) {
+    ts::next_tx(scenario, sender);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(scenario);
+        let mut tree = ts::take_shared<CommentsTree>(scenario);
+        let mut control_record = ts::take_shared<ArtifactControlRecord>(scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(scenario));
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(scenario),
+        );
+        assert!(publishing::series_in_controller_primary_mode(&series), 584);
+        assert!(comments::tree_authority_mode(&tree) == controller::authority_mode_controller_primary(), 585);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, sender);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+}
+
+#[test]
+fun test_controller_nft_marketplace_metadata_fields() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Marketplace file"), string::utf8(b"Description"), string::utf8(b"market.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+
+        assert!(controller::controller_nft_series_id(&controller_nft) == object::id(&series), 601);
+        assert!(controller::controller_nft_artifact_code(&controller_nft) == publishing::series_artifact_code(&series), 602);
+        assert!(controller::controller_nft_artifact_type(&controller_nft) == publishing::series_artifact_type(&series), 603);
+        assert!(controller::controller_nft_artifact_type_name(&controller_nft) == string::utf8(b"generic_file"), 604);
+        assert!(controller::controller_nft_control_right(&controller_nft) == string::utf8(b"artifact_controller"), 605);
+        assert!(controller::controller_nft_authority_mode_name(&controller_nft) == string::utf8(b"dual_mode"), 606);
+        assert!(
+            controller::controller_nft_image_url(&controller_nft) ==
+                string::utf8(b"https://aggregator.walrus-mainnet.walrus.space/v1/blobs/46egR1yyhHVRNdNx72ICBQ99AiywUaMwfi00CDYznUI"),
+            607,
+        );
+        assert!(
+            controller::controller_nft_name(&controller_nft) == {
+                let mut expected_name = string::utf8(b"PaperProof Artifact Controller: ");
+                string::append(&mut expected_name, publishing::series_artifact_code(&series));
+                expected_name
+            },
+            608,
+        );
+
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_controller_marketplace_objects_are_initialized() {
+    let mut scenario = ts::begin(ADMIN);
+    ts::create_system_objects(&mut scenario);
+    controller_marketplace::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let display = ts::take_shared<Display<ControllerNFT>>(&scenario);
+        let fields = display::fields(&display);
+        assert!(*vec_map::get(fields, &string::utf8(b"name")) == string::utf8(b"PaperProof Controller NFT: {artifact_code}"), 611);
+        assert!(*vec_map::get(fields, &string::utf8(b"image")) == string::utf8(b"{image_url}"), 612);
+        assert!(*vec_map::get(fields, &string::utf8(b"image_url")) == string::utf8(b"{image_url}"), 613);
+        assert!(*vec_map::get(fields, &string::utf8(b"control_right")) == string::utf8(b"{control_right}"), 614);
+        assert!(*vec_map::get(fields, &string::utf8(b"authority_mode")) == string::utf8(b"{authority_mode_name}"), 615);
+        assert!(ts::has_most_recent_for_sender<TransferPolicyCap<ControllerNFT>>(&scenario), 616);
+        ts::return_shared(display);
+    };
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let cap = ts::take_from_sender<TransferPolicyCap<ControllerNFT>>(&scenario);
+        transfer::public_transfer(cap, ADMIN);
+    };
+
+    ts::end(scenario);
 }
 
 #[test]
@@ -867,6 +1076,1274 @@ fun test_metadata_extensions_on_publish_add_version_and_series_update() {
         assert!(publishing::series_metadata_value_at(&series, 0) == string::utf8(b"10.5678/updated"), 37);
         clock::destroy_for_testing(clock_ref);
         ts::return_shared(series);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_publish_creates_controller_state() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Controlled file"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let series = ts::take_shared<ArtifactSeries>(&scenario);
+        let tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let record = ts::take_shared<GenericFileVersionRecord>(&scenario);
+
+        assert!(publishing::series_control_enabled(&series), 500);
+        assert!(comments::tree_control_enabled(&tree), 501);
+        assert!(publishing::series_authority_mode(&series) == controller::authority_mode_dual(), 502);
+        assert!(comments::tree_authority_mode(&tree) == controller::authority_mode_dual(), 503);
+        assert!(controller::control_record_authority_mode(&control_record) == controller::authority_mode_dual(), 504);
+        assert!(controller::controller_nft_series_id(&mut controller_nft) == object::id(&series), 505);
+        assert!(publishing::series_description(&series) == option::some(string::utf8(b"Series summary")), 506);
+        assert!(publishing::header_version_change_note(publishing::generic_file_header(&record)) == option::some(string::utf8(b"Initial release")), 507);
+
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+        ts::return_shared(record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_controller_primary_blocks_legacy_write_paths_and_allows_controller_write() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Controlled file"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_authority_mode(&series) == controller::authority_mode_controller_primary(), 520);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        publishing::add_generic_file_version_with_controller(
+            &root, &registry, &mut series, &mut control_record, &mut controller_nft, &vault, &fee_manager,
+            string::utf8(b"File v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(),
+            vector[metadata(b"version_change_note", b"Second release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        publishing::update_series_description_with_controller(
+            &mut series,
+            &mut control_record,
+            &mut controller_nft,
+            string::utf8(b"Updated series summary"),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+
+        assert!(publishing::series_current_version(&series) == 2, 521);
+        assert!(publishing::series_description(&series) == option::some(string::utf8(b"Updated series summary")), 522);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(control_record);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 6, location = paperproof_shared_controller::controller)]
+fun test_controller_primary_rejects_legacy_add_version_path() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Controlled file"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::add_generic_file_version(
+            &root, &registry, &mut series, &vault, &fee_manager,
+            string::utf8(b"Legacy blocked"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(),
+            vector[metadata(b"version_change_note", b"Second release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_dual_mode_preserves_legacy_owner_transfer_and_add_version() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Dual file"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::transfer_artifact_owner(&mut series, &mut tree, USER2, &clock_ref, ts::ctx(&mut scenario));
+        assert!(publishing::series_owner(&series) == USER2, 530);
+        assert!(comments::owner(&tree) == USER2, 531);
+        assert!(publishing::series_authority_mode(&series) == controller::authority_mode_dual(), 532);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::add_generic_file_version(
+            &root, &registry, &mut series, &vault, &fee_manager,
+            string::utf8(b"Dual file v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(),
+            vector[metadata(b"version_change_note", b"Second release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_current_version(&series) == 2, 533);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_controller_primary_allows_controller_owner_transfer() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Controlled transfer"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        publishing::transfer_artifact_owner_with_controller(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            USER1,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_owner(&series) == USER1, 534);
+        assert!(comments::owner(&tree) == USER1, 535);
+        assert!(controller::control_record_legacy_series_owner_mirror(&control_record) == USER1, 536);
+        assert!(controller::control_record_legacy_comments_owner_mirror(&control_record) == USER1, 537);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 31, location = paperproof_publishing::publishing)]
+fun test_controller_primary_blocks_mirror_transfer_to_non_holder() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Controlled transfer"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        publishing::transfer_artifact_owner_with_controller(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            USER2,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 9, location = paperproof_shared_controller::controller)]
+fun test_transfer_locked_blocks_controller_owner_transfer() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Locked transfer"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        controller::set_transfer_locked(&mut control_record, &mut controller_nft, true, &clock_ref, ts::ctx(&mut scenario));
+        publishing::transfer_artifact_owner_with_controller(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            USER2,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 3, location = paperproof_shared_controller::controller)]
+fun test_promote_existing_series_to_dual_mode_rejects_already_controlled_series() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Promotable file"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Legacy summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let comments_tree_id = publishing::series_comments_tree_id(&series);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, comments_tree_id);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_dual_mode(
+            &mut series,
+            &mut tree,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 9, location = paperproof_shared_controller::controller)]
+fun test_transfer_locked_blocks_controller_add_version() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Locked add-version"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        controller::set_transfer_locked(&mut control_record, &mut controller_nft, true, &clock_ref, ts::ctx(&mut scenario));
+        publishing::add_generic_file_version_with_controller(
+            &root, &registry, &mut series, &mut control_record, &mut controller_nft, &vault, &fee_manager,
+            string::utf8(b"Blocked v2"), string::utf8(b"Description v2"), string::utf8(b"file-v2.zip"), 200, string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"), string::utf8(b"blob_v2"), string::utf8(b"blob_object_v2"), common_content_type(),
+            vector[metadata(b"version_change_note", b"Second release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_controller_only_allows_controller_write() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Controller only"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_only(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_in_controller_only_mode(&series), 548);
+        publishing::add_generic_file_version_with_controller(
+            &root,
+            &registry,
+            &mut series,
+            &mut control_record,
+            &mut controller_nft,
+            &vault,
+            &fee_manager,
+            string::utf8(b"Controller only v2"),
+            string::utf8(b"Description v2"),
+            string::utf8(b"file-v2.zip"),
+            200,
+            string::utf8(b"MIT"),
+            string::utf8(b"sha256:v2"),
+            string::utf8(b"blob_v2"),
+            string::utf8(b"blob_object_v2"),
+            common_content_type(),
+            vector[metadata(b"version_change_note", b"Second release")],
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_current_version(&series) == 2, 549);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+#[expected_failure(abort_code = 6, location = paperproof_shared_controller::controller)]
+fun test_controller_only_blocks_legacy_owner_transfer() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Controller only"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_only(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::transfer_artifact_owner(&mut series, &mut tree, USER2, &clock_ref, ts::ctx(&mut scenario));
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_repair_existing_series_control_mirrors_after_controller_transfer() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Repair mirrors"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        transfer::public_transfer(controller_nft, USER2);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        assert!(controller::is_control_mirror_stale(&control_record, USER2), 551);
+        publishing::repair_existing_series_control_mirrors(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_owner(&series) == USER2, 552);
+        assert!(comments::owner(&tree) == USER2, 553);
+        assert!(controller::control_record_current_controller_mirror(&control_record) == USER2, 554);
+        assert!(controller::control_record_legacy_series_owner_mirror(&control_record) == USER2, 555);
+        assert!(controller::control_record_legacy_comments_owner_mirror(&control_record) == USER2, 556);
+        assert!(!controller::is_control_mirror_stale(&control_record, USER2), 557);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER2);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_controller_moderation_before_repair_keeps_stale_legacy_mirrors() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    publish_legacy_generic_file_for_sender(&mut scenario, USER1);
+    add_comment_to_first_series_tree_for_sender(&mut scenario, USER3, b"Legacy comment before transfer");
+    promote_first_legacy_series_to_dual_for_sender(&mut scenario, USER1);
+    promote_first_series_to_controller_primary_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        transfer::public_transfer(controller_nft, USER2);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut control_record = ts::take_shared<ArtifactControlRecord>(&scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        assert!(controller::is_control_mirror_stale(&control_record, USER2), 601);
+        assert!(comments::owner(&tree) == USER1, 602);
+        comments::set_comment_status_with_controller(
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            1,
+            comments::comment_status_hidden(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::status(comments::borrow_comment(&tree, 1)) == comments::comment_status_hidden(), 603);
+        assert!(controller::control_record_current_controller_mirror(&control_record) == USER2, 604);
+        assert!(controller::control_record_legacy_comments_owner_mirror(&control_record) == USER1, 605);
+        assert!(controller::is_control_mirror_stale(&control_record, USER2), 606);
+
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER2);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_sync_existing_series_control_mirrors_keeps_existing_owners() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::publish_generic_file(
+            &root, &registry, &vault, &fee_manager,
+            string::utf8(b"Sync mirrors"), string::utf8(b"Description"), string::utf8(b"file.zip"), 100, string::utf8(b"MIT"),
+            common_hash(), common_blob(), common_blob_object(), common_content_type(),
+            vector[metadata(b"series_description", b"Series summary")],
+            vector[metadata(b"version_change_note", b"Initial release")],
+            option::none(), &clock_ref, ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared_by_id<CommentsTree>(&scenario, publishing::series_comments_tree_id(&series));
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::sync_existing_series_control_mirrors(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(controller::control_record_current_controller_mirror(&control_record) == USER1, 558);
+        assert!(controller::control_record_legacy_series_owner_mirror(&control_record) == USER1, 559);
+        assert!(controller::control_record_legacy_comments_owner_mirror(&control_record) == USER1, 560);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_sync_existing_series_control_mirrors_does_not_auto_repair_stale_owners() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    publish_legacy_generic_file_for_sender(&mut scenario, USER1);
+    promote_first_legacy_series_to_dual_for_sender(&mut scenario, USER1);
+    promote_first_series_to_controller_primary_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        transfer::public_transfer(controller_nft, USER2);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut control_record = ts::take_shared<ArtifactControlRecord>(&scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        assert!(controller::is_control_mirror_stale(&control_record, USER2), 607);
+        assert!(publishing::series_owner(&series) == USER1, 608);
+        assert!(comments::owner(&tree) == USER1, 609);
+        publishing::sync_existing_series_control_mirrors(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(controller::control_record_current_controller_mirror(&control_record) == USER2, 610);
+        assert!(controller::control_record_legacy_series_owner_mirror(&control_record) == USER1, 611);
+        assert!(controller::control_record_legacy_comments_owner_mirror(&control_record) == USER1, 612);
+        assert!(controller::is_control_mirror_stale(&control_record, USER2), 613);
+        assert!(publishing::series_owner(&series) == USER1, 614);
+        assert!(comments::owner(&tree) == USER1, 615);
+
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER2);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_real_legacy_series_can_be_promoted_to_dual_mode() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    publish_legacy_generic_file_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let series_id = object::id(&series);
+        let tree_id = publishing::series_comments_tree_id(&series);
+        let likes_id = publishing::series_likes_book_id(&series);
+        let version_id = publishing::series_current_version_id(&series);
+        assert!(!publishing::series_control_enabled(&series), 561);
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        assert!(comments::tree_id(&tree) == tree_id, 562);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_dual_mode(
+            &mut series,
+            &mut tree,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_control_enabled(&series), 562);
+        assert!(publishing::series_in_dual_mode(&series), 563);
+        assert!(comments::tree_control_enabled(&tree), 564);
+        assert!(comments::tree_authority_mode(&tree) == controller::authority_mode_dual(), 565);
+        assert!(object::id(&series) == series_id, 566);
+        assert!(publishing::series_comments_tree_id(&series) == tree_id, 567);
+        assert!(publishing::series_likes_book_id(&series) == likes_id, 568);
+        assert!(publishing::series_current_version_id(&series) == version_id, 569);
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let series = ts::take_shared<ArtifactSeries>(&scenario);
+        let tree = ts::take_shared<CommentsTree>(&scenario);
+        let control_record = ts::take_shared<ArtifactControlRecord>(&scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let series_id = object::id(&series);
+        let tree_id = publishing::series_comments_tree_id(&series);
+
+        assert!(controller::control_record_series_id(&control_record) == series_id, 570);
+        assert!(controller::control_record_comments_tree_id(&control_record) == tree_id, 571);
+        assert!(controller::control_record_legacy_series_owner_mirror(&control_record) == USER1, 572);
+        assert!(controller::control_record_legacy_comments_owner_mirror(&control_record) == USER1, 573);
+        assert!(controller::controller_nft_series_id(&mut controller_nft) == series_id, 574);
+        assert!(comments::tree_id(&tree) == tree_id, 575);
+
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_real_legacy_series_promote_to_dual_then_controller_primary() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    publish_legacy_generic_file_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_dual_mode(
+            &mut series,
+            &mut tree,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut control_record = ts::take_shared<ArtifactControlRecord>(&scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref2 = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_primary(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref2,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_in_controller_primary_mode(&series), 574);
+        assert!(comments::tree_authority_mode(&tree) == controller::authority_mode_controller_primary(), 575);
+        clock::destroy_for_testing(clock_ref2);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut control_record = ts::take_shared_by_id<ArtifactControlRecord>(&scenario, control_record_id(&series));
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::add_generic_file_version_with_controller(
+            &root, &registry, &mut series, &mut control_record, &mut controller_nft, &vault, &fee_manager,
+            string::utf8(b"Legacy promoted v2"),
+            string::utf8(b"Description v2"),
+            string::utf8(b"legacy-v2.zip"),
+            200,
+            string::utf8(b"MIT"),
+            string::utf8(b"sha256:legacy-v2"),
+            string::utf8(b"blob_legacy_v2"),
+            string::utf8(b"blob_object_legacy_v2"),
+            common_content_type(),
+            vector[metadata(b"version_change_note", b"Promotion-based v2")],
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_current_version(&series) == 2, 576);
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(series);
+        ts::return_shared(control_record);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_real_legacy_series_can_be_promoted_to_controller_only() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    publish_legacy_generic_file_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_dual_mode(
+            &mut series,
+            &mut tree,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        clock::destroy_for_testing(clock_ref);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+    };
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut control_record = ts::take_shared<ArtifactControlRecord>(&scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref2 = clock::create_for_testing(ts::ctx(&mut scenario));
+        publishing::promote_existing_series_to_controller_only(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref2,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_in_controller_only_mode(&series), 577);
+        assert!(comments::tree_authority_mode(&tree) == controller::authority_mode_controller_only(), 578);
+        clock::destroy_for_testing(clock_ref2);
+        transfer::public_transfer(controller_nft, USER1);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+fun test_real_legacy_series_promotion_rehearsal_with_transfer_repair_and_controller_ops() {
+    let mut scenario = ts::begin(ADMIN);
+    publishing::init_for_testing(ts::ctx(&mut scenario));
+
+    publish_legacy_generic_file_for_sender(&mut scenario, USER1);
+    add_comment_to_first_series_tree_for_sender(&mut scenario, USER3, b"Legacy comment before promotion");
+    promote_first_legacy_series_to_dual_for_sender(&mut scenario, USER1);
+    promote_first_series_to_controller_primary_for_sender(&mut scenario, USER1);
+
+    ts::next_tx(&mut scenario, USER1);
+    {
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        transfer::public_transfer(controller_nft, USER2);
+    };
+
+    ts::next_tx(&mut scenario, USER2);
+    {
+        let mut series = ts::take_shared<ArtifactSeries>(&scenario);
+        let series_id = object::id(&series);
+        let comments_tree_id = publishing::series_comments_tree_id(&series);
+        let likes_book_id = publishing::series_likes_book_id(&series);
+        let original_version_id = publishing::series_current_version_id(&series);
+        let mut tree = ts::take_shared<CommentsTree>(&scenario);
+        let mut control_record = ts::take_shared<ArtifactControlRecord>(&scenario);
+        let mut controller_nft = ts::take_from_sender<ControllerNFT>(&scenario);
+        let clock_ref = clock::create_for_testing(ts::ctx(&mut scenario));
+
+        assert!(controller::is_control_mirror_stale(&control_record, USER2), 586);
+        publishing::repair_existing_series_control_mirrors(
+            &mut series,
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(!controller::is_control_mirror_stale(&control_record, USER2), 587);
+        assert!(publishing::series_owner(&series) == USER2, 588);
+        assert!(comments::owner(&tree) == USER2, 589);
+        assert!(comments::tree_id(&tree) == comments_tree_id, 590);
+        assert!(publishing::series_current_version_id(&series) == original_version_id, 591);
+
+        comments::set_comment_status_with_controller(
+            &mut tree,
+            &mut control_record,
+            &mut controller_nft,
+            1,
+            comments::comment_status_hidden(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(comments::status(comments::borrow_comment(&tree, 1)) == comments::comment_status_hidden(), 592);
+
+        let root = ts::take_shared<PaperProofRoot>(&scenario);
+        let registry = ts::take_shared<TypeRegistry>(&scenario);
+        let vault = ts::take_shared<GovernanceVault>(&scenario);
+        let fee_manager = ts::take_shared<FeeManager>(&scenario);
+        publishing::add_generic_file_version_with_controller(
+            &root,
+            &registry,
+            &mut series,
+            &mut control_record,
+            &mut controller_nft,
+            &vault,
+            &fee_manager,
+            string::utf8(b"Rehearsal v2"),
+            string::utf8(b"Rehearsal description v2"),
+            string::utf8(b"rehearsal-v2.zip"),
+            200,
+            string::utf8(b"MIT"),
+            string::utf8(b"sha256:rehearsal-v2"),
+            string::utf8(b"blob_rehearsal_v2"),
+            string::utf8(b"blob_object_rehearsal_v2"),
+            common_content_type(),
+            vector[metadata(b"version_change_note", b"Controller migration rehearsal v2")],
+            option::none(),
+            &clock_ref,
+            ts::ctx(&mut scenario),
+        );
+        assert!(publishing::series_current_version(&series) == 2, 593);
+        assert!(object::id(&series) == series_id, 594);
+        assert!(publishing::series_comments_tree_id(&series) == comments_tree_id, 595);
+        assert!(publishing::series_likes_book_id(&series) == likes_book_id, 596);
+        assert!(publishing::series_in_controller_primary_mode(&series), 597);
+        assert!(controller::control_record_current_controller_mirror(&control_record) == USER2, 598);
+        assert!(controller::control_record_legacy_series_owner_mirror(&control_record) == USER2, 599);
+        assert!(controller::control_record_legacy_comments_owner_mirror(&control_record) == USER2, 600);
+
+        clock::destroy_for_testing(clock_ref);
+        transfer::public_transfer(controller_nft, USER2);
+        ts::return_shared(root);
+        ts::return_shared(registry);
+        ts::return_shared(vault);
+        ts::return_shared(fee_manager);
+        ts::return_shared(series);
+        ts::return_shared(tree);
+        ts::return_shared(control_record);
     };
 
     ts::end(scenario);
@@ -2072,3 +3549,5 @@ fun test_overlong_publishing_field_rejected() {
 
     ts::end(scenario);
 }
+
+

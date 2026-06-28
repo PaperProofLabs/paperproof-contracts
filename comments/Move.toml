@@ -5,6 +5,7 @@ version = "0.0.1"
 
 [dependencies]
 paperproof_governance = { local = "../governance" }
+paperproof_shared_controller = { local = "../shared/controller" }
 pprf = { local = "../../PPRF-token-contracts" }
 
 [addresses]

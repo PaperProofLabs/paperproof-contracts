@@ -5,13 +5,13 @@
 version = 4
 
 [pinned.mainnet.MoveStdlib]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = 'crates\sui-framework\packages\move-stdlib', rev = "c2428b3aaf9c24270b609001e56d96cb10c76d28" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = 'crates\sui-framework\packages\move-stdlib', rev = "718ae563a42fb4ba0d055588f81c704dcef58c25" }
 use_environment = "mainnet"
 manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
 deps = {}
 
 [pinned.mainnet.Sui]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = 'crates\sui-framework\packages\sui-framework', rev = "c2428b3aaf9c24270b609001e56d96cb10c76d28" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = 'crates\sui-framework\packages\sui-framework', rev = "718ae563a42fb4ba0d055588f81c704dcef58c25" }
 use_environment = "mainnet"
 manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
 deps = { MoveStdlib = "MoveStdlib" }
@@ -25,8 +25,8 @@ deps = { std = "MoveStdlib", sui = "Sui" }
 [pinned.mainnet.paperproof_comments]
 source = { local = '..\comments' }
 use_environment = "mainnet"
-manifest_digest = "6CF27859D00505BE194A488EEFE2E0399C6616A34148E8A9B25C0DBB1DB8B066"
-deps = { paperproof_governance = "paperproof_governance", pprf = "pprf", std = "MoveStdlib", sui = "Sui" }
+manifest_digest = "839A80D6E40C133B14068A9F06250E893AF18D3A93C15DE65F708A6B2A6C935B"
+deps = { paperproof_governance = "paperproof_governance", paperproof_shared_controller = "paperproof_shared_controller", pprf = "pprf", std = "MoveStdlib", sui = "Sui" }
 
 [pinned.mainnet.paperproof_governance]
 source = { local = '..\governance' }
@@ -37,8 +37,14 @@ deps = { openzeppelin_access = "openzeppelin_access", pprf = "pprf", std = "Move
 [pinned.mainnet.paperproof_publishing]
 source = { root = true }
 use_environment = "mainnet"
-manifest_digest = "8F9C8C598C4B11071C167EC135BB4D62EBA5E6EE5E8EACFF2737E9816D8B0EAF"
-deps = { paperproof_comments = "paperproof_comments", paperproof_governance = "paperproof_governance", pprf = "pprf", std = "MoveStdlib", sui = "Sui" }
+manifest_digest = "BCB6F55588386E8607E228A2E15CAEDAB15FD633D545900F1B30BC023BA83004"
+deps = { paperproof_comments = "paperproof_comments", paperproof_governance = "paperproof_governance", paperproof_shared_controller = "paperproof_shared_controller", pprf = "pprf", std = "MoveStdlib", sui = "Sui" }
+
+[pinned.mainnet.paperproof_shared_controller]
+source = { local = '..\shared\controller' }
+use_environment = "mainnet"
+manifest_digest = "E41BBD67BE8940D26C79D78B028477EF5B33BA217A1282C78ACB344CF8A5ECF6"
+deps = { std = "MoveStdlib", sui = "Sui" }
 
 [pinned.mainnet.pprf]
 source = { local = '..\..\PPRF-token-contracts' }

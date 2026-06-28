@@ -1,0 +1,9 @@
+[package]
+name = "paperproof_shared_controller"
+edition = "2024"
+version = "0.0.1"
+
+[dependencies]
+
+[addresses]
+paperproof_shared_controller = "0x0"
